@@ -39,8 +39,23 @@ seen_cache_size: 5000
 base_backoff_seconds: 2.0
 max_backoff_seconds: 120.0
 
-# Targets to scrape: Threads profile usernames (without @) or thread URLs.
-# Filled in once real targets are confirmed.
+# Targets to scrape: Threads profile usernames (without @).
+# Large, frequently-posting public profiles. Handles are NOT verified from
+# here - a wrong/private/renamed one just logs "no posts found" and is skipped.
+# Remove dead ones after the first cycles; add more to raise throughput.
 targets:
-  - type: "profile"
-    value: "zuck"
+  - {type: "profile", value: "zuck"}
+  - {type: "profile", value: "mosseri"}
+  - {type: "profile", value: "instagram"}
+  - {type: "profile", value: "nba"}
+  - {type: "profile", value: "espn"}
+  - {type: "profile", value: "cnn"}
+  - {type: "profile", value: "nytimes"}
+  - {type: "profile", value: "mrbeast"}
+  - {type: "profile", value: "cristiano"}
+  - {type: "profile", value: "leomessi"}
+  - {type: "profile", value: "therock"}
+  - {type: "profile", value: "kyliejenner"}
+  - {type: "profile", value: "selenagomez"}
+  - {type: "profile", value: "nasa"}
+  - {type: "profile", value: "netflix"}
