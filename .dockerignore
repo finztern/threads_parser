@@ -8,3 +8,4 @@ __pycache__/
 .venv/
 proxies.txt
 targets.txt
+data/

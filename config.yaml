@@ -28,6 +28,17 @@ proxy_cooldown_seconds: 120
 # reply count grew since we last looked.
 reply_post_max_age_seconds: 604800
 
+# Self-growing target list: authors of scraped posts/replies become new targets.
+# Active profiles are re-checked every min_interval; silent ones back off (x2)
+# up to max_interval; non-existent ones are dropped. State survives restarts.
+discovery:
+  enabled: true
+  state_file: "data/targets_state.json"
+  min_interval_seconds: 300
+  max_interval_seconds: 21600
+  max_targets_per_cycle: 400
+  max_known_targets: 200000
+
 # Overall rate of items leaving the process towards store_items,
 # shared by all workers via a single TokenBucket.
 target_rate_per_second: 20.0

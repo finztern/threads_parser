@@ -21,6 +21,11 @@ docker compose logs -f parser           # строка "http cycle: ..." раз 
 
 `proxies.txt`, `targets.txt`, `.env` — секреты/локальные файлы, в git не попадают.
 
+**Автонабор профилей** (`discovery` в `config.yaml`): авторы всех полученных постов и
+ответов добавляются в очередь. Активные профили проверяются часто, молчащие — реже
+(пауза растёт вдвое до 6 ч), несуществующие отбрасываются. Список хранится в
+`data/targets_state.json` и переживает перезапуск. В логе: `known=… (+N new) active=… dead=…`.
+
 ## Исследовательские скрипты
 
 `scripts/threads_http_probe.py`, `anon_probe.py`, `dump_page.py`, `tiktok_probe.py`,

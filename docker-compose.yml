@@ -25,6 +25,7 @@ services:
       - ./targets.txt:/app/targets.txt:ro
       - ./config.yaml:/app/config.yaml
       - ./debug:/app/debug
+      - ./data:/app/data
     restart: unless-stopped
 
   # ---- browser mode (optional) ----

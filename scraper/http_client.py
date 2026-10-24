@@ -63,6 +63,7 @@ class ThreadsHttpClient:
         or "failed" (proxy/transport/wall problems on every attempt).
         """
         last = "failed"
+        empties = 0
         for _ in range(self._attempts):
             proxy = self._pool.next()
             self.stats["requests"] += 1
@@ -102,7 +103,10 @@ class ThreadsHttpClient:
             if items:
                 return "ok", items
             self.stats["empty_page"] += 1
-            last = "empty"  # maybe a transient "Something went wrong"; retry on another proxy
+            last = "empty"  # maybe a transient "Something went wrong"; retry once on another proxy
+            empties += 1
+            if empties >= 2:  # private / no posts: do not burn more requests on it
+                break
         return last, []
 
     async def fetch_profile(self, username: str) -> tuple[str, list[RawThreadsPost]]:
