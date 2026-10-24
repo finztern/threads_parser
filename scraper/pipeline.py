@@ -113,12 +113,9 @@ async def send_batch(
         # 2xx with no JSON body: assume the whole batch was accepted.
         return all_ids, set()
 
-    if (
-        isinstance(data, dict)
-        and isinstance(data.get("results"), list)
-        and not all(isinstance(r, dict) for r in data["results"])
-    ):
-        # Unknown per-item format (e.g. plain strings): do not crash the cycle.
+    results = data.get("results") if isinstance(data, dict) else None
+    if results is not None and not (isinstance(results, list) and all(isinstance(r, dict) for r in results)):
+        # Unknown per-item format (a dict, plain strings, ...): do not crash the cycle.
         # HTTP 2xx -> assume the whole batch was accepted; log a sample so the
         # parsing below can be adapted to the real collector response.
         LOGGER.warning(
