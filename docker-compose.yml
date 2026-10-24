@@ -1,0 +1,83 @@
+# One Xray (VLESS) container per account -> each account has its own VPN
+# exit from the Trust.Zone subscription. Playwright's proxy for an account is
+# that account's socks5://xray_account_N:1080.
+#
+# The store_items collector stays on the host, reached via host.docker.internal.
+#
+# "login" profile (not started by `docker compose up`): headed browser + noVNC
+# for a real interactive login through the account's own VPN exit:
+#   docker compose --profile login up --build login_account_1
+# noVNC is bound to 127.0.0.1 only (no password!) - reach it via SSH tunnel:
+#   ssh -L 6081:127.0.0.1:6081 user@host   ->   http://127.0.0.1:6081/vnc.html
+
+services:
+  xray_account_1:
+    build: ./docker/xray
+    environment:
+      VLESS_URI: ${VLESS_URI_ACCOUNT_1}
+    networks: [internal]
+    restart: unless-stopped
+
+  xray_account_2:
+    build: ./docker/xray
+    environment:
+      VLESS_URI: ${VLESS_URI_ACCOUNT_2}
+    networks: [internal]
+    restart: unless-stopped
+
+  parser:
+    build: .
+    depends_on:
+      - xray_account_1
+      - xray_account_2
+    env_file: .env
+    environment:
+      STORE_ENDPOINT: ${STORE_ENDPOINT:-http://host.docker.internal:9000/store_items}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./cookies:/app/cookies:ro
+      - ./storage_state:/app/storage_state:ro
+      - ./accounts.yaml:/app/accounts.yaml:ro
+      - ./config.yaml:/app/config.yaml
+      - ./debug:/app/debug
+    networks: [internal]
+    restart: unless-stopped
+
+  login_account_1:
+    build:
+      context: .
+      dockerfile: docker/login/Dockerfile
+    profiles: ["login"]
+    depends_on:
+      - xray_account_1
+    environment:
+      ACCOUNT_NAME: account_1
+      PROXY_SERVER: socks5://xray_account_1:1080
+    ports:
+      - "127.0.0.1:6081:6080"
+    volumes:
+      - ./storage_state:/app/storage_state
+      - ./accounts.yaml:/app/accounts.yaml:ro
+    networks: [internal]
+
+  login_account_2:
+    build:
+      context: .
+      dockerfile: docker/login/Dockerfile
+    profiles: ["login"]
+    depends_on:
+      - xray_account_2
+    environment:
+      ACCOUNT_NAME: account_2
+      PROXY_SERVER: socks5://xray_account_2:1080
+    ports:
+      - "127.0.0.1:6082:6080"
+    volumes:
+      - ./storage_state:/app/storage_state
+      - ./accounts.yaml:/app/accounts.yaml:ro
+    networks: [internal]
+
+networks:
+  internal:
+    driver: bridge

@@ -1,5 +1,8 @@
-"""Playwright session for one Threads account: proxy + cookies (Cookie
-Editor JSON) applied, ready to navigate.
+"""Playwright session for one Threads account: proxy + auth state applied,
+ready to navigate.
+
+Auth state priority: storage_state/<account>.json (real interactive login,
+cookies + localStorage) if present, else cookie_file (Cookie Editor JSON).
 
 fetch_new_posts() is implemented via response interception, not by
 hand-building GraphQL requests: several required headers on Threads'
@@ -20,7 +23,7 @@ from typing import Any
 from playwright.async_api import Browser, BrowserContext, Page, Response, async_playwright
 
 from scraper.config import AccountConfig, load_cookies
-from scraper.constants import BROWSER_NAV_TIMEOUT_MS, LOGGER
+from scraper.constants import BASE_DIR, BROWSER_NAV_TIMEOUT_MS, LOGGER
 from scraper.pipeline import RawThreadsPost
 
 # Real site host (NOT the same as the Exorde schema's fixed "domain": "threads.net").
@@ -31,6 +34,11 @@ THREADS_BASE_URL = "https://www.threads.com"
 FEED_QUERY_NAMES = {"BarcelonaFeedDirectQuery", "BarcelonaFeedPaginationDirectQuery"}
 POST_QUERY_NAMES = {"BarcelonaPostPageTargetQuery", "BarcelonaPostPageDownwardQuery"}
 GRAPHQL_URL_PARTS = ("/graphql/query", "/api/graphql")
+
+# Substrings in page.url meaning we got bounced to a login/checkpoint page.
+LOGIN_WALL_MARKERS = ("accounts/login", "/login", "checkpoint")
+
+DEBUG_DIR = BASE_DIR / "debug"
 
 
 def _is_graphql_response(response: Response) -> bool:
@@ -154,13 +162,24 @@ class ThreadsBrowserSession:
             headless=True,
             proxy=proxy_config,
         )
-        self._context = await self._browser.new_context(
-            user_agent=self._account.user_agent or None,
-        )
+        if self._account.storage_state_file.exists():
+            LOGGER.info("[%s] using storage_state %s", self._account.name, self._account.storage_state_file)
+            self._context = await self._browser.new_context(
+                storage_state=str(self._account.storage_state_file),
+                user_agent=self._account.user_agent or None,
+            )
+        else:
+            LOGGER.info(
+                "[%s] no storage_state at %s, falling back to cookie_file %s",
+                self._account.name,
+                self._account.storage_state_file,
+                self._account.cookie_file,
+            )
+            self._context = await self._browser.new_context(
+                user_agent=self._account.user_agent or None,
+            )
+            await self._context.add_cookies(load_cookies(self._account.cookie_file))
         self._context.set_default_navigation_timeout(BROWSER_NAV_TIMEOUT_MS)
-
-        cookies = load_cookies(self._account.cookie_file)
-        await self._context.add_cookies(cookies)
 
         self._page = await self._context.new_page()
         LOGGER.info("[%s] browser session started", self._account.name)
@@ -173,6 +192,35 @@ class ThreadsBrowserSession:
         if self._playwright:
             await self._playwright.stop()
         LOGGER.info("[%s] browser session closed", self._account.name)
+
+    async def _dump_debug(self, tag: str) -> None:
+        """Save screenshot + HTML of the current page under debug/ (gitignored)."""
+        assert self._page is not None
+        try:
+            DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+            shot = DEBUG_DIR / f"{self._account.name}_{tag}.png"
+            html = DEBUG_DIR / f"{self._account.name}_{tag}.html"
+            await self._page.screenshot(path=str(shot), full_page=True)
+            html.write_text(await self._page.content(), encoding="utf-8")
+            LOGGER.warning("[%s] debug dump saved: %s, %s", self._account.name, shot, html)
+        except Exception:
+            LOGGER.exception("[%s] failed to save debug dump", self._account.name)
+
+    async def _check_login_wall(self, expected_path: str) -> bool:
+        """True (and a debug dump) if the page landed on a login/checkpoint."""
+        assert self._page is not None
+        url = self._page.url
+        if "threads.com" not in url or any(m in url for m in LOGIN_WALL_MARKERS):
+            LOGGER.warning(
+                "[%s] expected %s but landed on %s - login wall/checkpoint "
+                "(auth state expired or session flagged)",
+                self._account.name,
+                expected_path,
+                url,
+            )
+            await self._dump_debug("login_wall")
+            return True
+        return False
 
     async def fetch_new_posts(
         self,
@@ -252,6 +300,7 @@ class ThreadsBrowserSession:
         self._page.on("response", on_response)
         try:
             await self._page.goto(f"{THREADS_BASE_URL}/@{username}", wait_until="networkidle")
+            await self._check_login_wall(f"/@{username}")
             for _ in range(max_scrolls):
                 await self._page.mouse.wheel(0, 4000)
                 await self._page.wait_for_timeout(int(scroll_pause_seconds * 1000))
@@ -266,6 +315,14 @@ class ThreadsBrowserSession:
                 LOGGER.warning("[%s] failed to parse GraphQL response body: %s", self._account.name, response.url)
                 continue
             posts.extend(_extract_feed_posts(payload))
+
+        if not captured:
+            LOGGER.warning(
+                "[%s] no feed GraphQL response captured for @%s - dumping page for inspection",
+                self._account.name,
+                username,
+            )
+            await self._dump_debug("no_feed_captured")
         return posts
 
     async def _fetch_post_replies(
@@ -281,6 +338,7 @@ class ThreadsBrowserSession:
         self._page.on("response", on_response)
         try:
             await self._page.goto(f"{THREADS_BASE_URL}/@{username}/post/{code}", wait_until="networkidle")
+            await self._check_login_wall(f"/@{username}/post/{code}")
             await self._page.wait_for_timeout(int(pause_seconds * 1000))
         finally:
             self._page.remove_listener("response", on_response)
