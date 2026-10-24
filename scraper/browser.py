@@ -177,6 +177,37 @@ def _extract_reply_posts(payload: dict[str, Any], parent_post_id: str) -> list[R
     return posts
 
 
+def _walk_data_roots(obj: Any):
+    """Yield every dict that looks like a GraphQL result root ({"data": {"media": ...}})."""
+    if isinstance(obj, dict):
+        data = obj.get("data")
+        if isinstance(data, dict) and isinstance(data.get("media"), dict):
+            yield obj
+        for value in obj.values():
+            yield from _walk_data_roots(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            yield from _walk_data_roots(value)
+
+
+def _extract_ssr_reply_posts(html: str, parent_post_id: str) -> list[RawThreadsPost]:
+    """Direct replies embedded in a post page's HTML (same schema as the
+    GraphQL post-page response, so _extract_reply_posts does the parsing).
+    """
+    posts: dict[str, RawThreadsPost] = {}
+    for raw in _SJS_BLOCK_RE.findall(html):
+        if "direct_replies" not in raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            continue
+        for root in _walk_data_roots(data):
+            for post in _extract_reply_posts(root, parent_post_id):
+                posts[post.external_id] = post
+    return list(posts.values())
+
+
 class ThreadsBrowserSession:
     """One Playwright browser + context per account, with proxy and
     cookies applied. Mandatory proxy per Exorde requirements.
@@ -396,15 +427,17 @@ class ThreadsBrowserSession:
             await self._page.goto(f"{THREADS_BASE_URL}/@{username}/post/{code}", wait_until="networkidle")
             await self._check_login_wall(f"/@{username}/post/{code}")
             await self._page.wait_for_timeout(int(pause_seconds * 1000))
+            ssr_replies = _extract_ssr_reply_posts(await self._page.content(), post_pk)
         finally:
             self._page.remove_listener("response", on_response)
 
-        replies: list[RawThreadsPost] = []
+        by_id: dict[str, RawThreadsPost] = {r.external_id: r for r in ssr_replies}
         for response in captured:
             try:
                 payload = await response.json()
             except Exception:
                 LOGGER.warning("[%s] failed to parse GraphQL response body: %s", self._account.name, response.url)
                 continue
-            replies.extend(_extract_reply_posts(payload, parent_post_id=post_pk))
-        return replies
+            for reply in _extract_reply_posts(payload, parent_post_id=post_pk):
+                by_id[reply.external_id] = reply
+        return list(by_id.values())
