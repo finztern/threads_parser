@@ -48,10 +48,20 @@ def summarize_tiktok(html: str) -> None:
         return
     scope = data.get("__DEFAULT_SCOPE__", {})
     print("TikTok scopes:", sorted(scope.keys()))
-    for name, body in scope.items():
+    for name in ("webapp.user-detail", "webapp.video-detail"):
+        body = scope.get(name)
         if isinstance(body, dict):
-            status = body.get("statusCode", body.get("status_code"))
-            print(f"  {name}: statusCode={status} keys={sorted(body.keys())[:12]}")
+            print(f"  {name}: statusCode={body.get('statusCode')} statusMsg={body.get('statusMsg')!r}")
+    info = (scope.get("webapp.user-detail") or {}).get("userInfo") or {}
+    user, stats = info.get("user") or {}, info.get("stats") or {}
+    if user:
+        print(
+            "  user:", user.get("uniqueId"), "| privateAccount:", user.get("privateAccount"),
+            "| followers:", stats.get("followerCount"), "| videos:", stats.get("videoCount"),
+        )
+    item = ((scope.get("webapp.video-detail") or {}).get("itemInfo") or {}).get("itemStruct") or {}
+    if item:
+        print("  video:", item.get("id"), "| desc:", (item.get("desc") or "")[:60], "| stats:", item.get("stats"))
 
 
 def proxy_from_url(raw: str) -> dict:
@@ -85,15 +95,27 @@ async def main() -> None:
             )
         )
         page = await context.new_page()
+
+        api_calls: list[str] = []
+
+        def on_response(response) -> None:
+            if "/api/" in response.url:
+                path = urlsplit(response.url).path
+                api_calls.append(f"{response.status} {path}")
+
+        page.on("response", on_response)
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-            await page.wait_for_timeout(4000)
+            await page.wait_for_timeout(5000)
+            await page.mouse.wheel(0, 3000)  # trigger lazy lists once
+            await page.wait_for_timeout(3000)
             html = await page.content()
 
+            host = (urlsplit(url).hostname or "site").replace("www.", "").split(".")[0]
             out = BASE_DIR / "debug"
             out.mkdir(parents=True, exist_ok=True)
-            (out / "anon_dump.html").write_text(html, encoding="utf-8")
-            await page.screenshot(path=str(out / "anon_dump.png"), full_page=True)
+            (out / f"anon_{host}.html").write_text(html, encoding="utf-8")
+            await page.screenshot(path=str(out / f"anon_{host}.png"), full_page=True)
 
             landed = page.url
             username = urlsplit(url).path.strip("/").split("/")[0].lstrip("@")
@@ -103,7 +125,18 @@ async def main() -> None:
             print("html size:", len(html), "| sjs json blocks:", len(_SJS_BLOCK_RE.findall(html)))
             print("threads posts found in HTML:", len(_extract_ssr_feed_posts(html, username)))
             summarize_tiktok(html)
-            print("saved: debug/anon_dump.html, debug/anon_dump.png")
+            if "tiktok" in url:
+                links = await page.eval_on_selector_all(
+                    'a[href*="/video/"]', "els => [...new Set(els.map(e => e.href))]"
+                )
+                print("video links on page:", len(links))
+                for link in links[:5]:
+                    print("  ", link)
+            counts: dict[str, int] = {}
+            for call in api_calls:
+                counts[call] = counts.get(call, 0) + 1
+            print("API calls:", dict(sorted(counts.items())) or "none")
+            print(f"saved: debug/anon_{host}.html, debug/anon_{host}.png")
         finally:
             await browser.close()
 
