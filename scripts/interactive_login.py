@@ -62,7 +62,12 @@ async def main() -> None:
         logged_in = False
         while elapsed < TIMEOUT_SECONDS:
             cookies = await context.cookies()
-            if any(c["name"] == "sessionid" and c["value"] for c in cookies):
+            # Must be the THREADS session: logging in via Instagram sets an
+            # instagram.com sessionid first, before returning to threads.com.
+            if any(
+                c["name"] == "sessionid" and c["value"] and "threads." in c.get("domain", "")
+                for c in cookies
+            ):
                 logged_in = True
                 break
             await asyncio.sleep(CHECK_INTERVAL_SECONDS)
