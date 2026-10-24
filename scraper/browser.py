@@ -17,6 +17,8 @@ this is based on.
 """
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -107,6 +109,50 @@ def _extract_feed_posts(payload: dict[str, Any]) -> list[RawThreadsPost]:
             if post:
                 posts.append(post)
     return posts
+
+
+# Threads server-renders the first page of a profile into the HTML as
+# <script type="application/json" data-sjs>..</script> blocks, so the first
+# posts never appear as a separate GraphQL response (only pagination does).
+_SJS_BLOCK_RE = re.compile(r'<script type="application/json"[^>]*data-sjs[^>]*>(.*?)</script>', re.S)
+
+
+def _walk_thread_nodes(obj: Any):
+    """Yield every dict that holds a 'thread_items' list, at any depth."""
+    if isinstance(obj, dict):
+        if isinstance(obj.get("thread_items"), list):
+            yield obj
+        for value in obj.values():
+            yield from _walk_thread_nodes(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            yield from _walk_thread_nodes(value)
+
+
+def _extract_ssr_feed_posts(html: str, username: str) -> list[RawThreadsPost]:
+    """Top-level posts of @username embedded in the profile page HTML.
+
+    Same 'post' object shape as in GraphQL feed responses, so the real
+    fields go through _parse_post_node (nothing is invented). Only posts
+    authored by the requested username are kept.
+    """
+    posts: dict[str, RawThreadsPost] = {}
+    for raw in _SJS_BLOCK_RE.findall(html):
+        if "thread_items" not in raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            continue
+        for node in _walk_thread_nodes(data):
+            for item in node["thread_items"]:
+                post_node = (item or {}).get("post")
+                if not post_node:
+                    continue
+                post = _parse_post_node(post_node, external_parent_id="")
+                if post and post.username.lower() == username.lower():
+                    posts[post.external_id] = post
+    return list(posts.values())
 
 
 def _extract_reply_posts(payload: dict[str, Any], parent_post_id: str) -> list[RawThreadsPost]:
@@ -301,29 +347,39 @@ class ThreadsBrowserSession:
         try:
             await self._page.goto(f"{THREADS_BASE_URL}/@{username}", wait_until="networkidle")
             await self._check_login_wall(f"/@{username}")
+            ssr_posts = _extract_ssr_feed_posts(await self._page.content(), username)
             for _ in range(max_scrolls):
                 await self._page.mouse.wheel(0, 4000)
                 await self._page.wait_for_timeout(int(scroll_pause_seconds * 1000))
         finally:
             self._page.remove_listener("response", on_response)
 
-        posts: list[RawThreadsPost] = []
+        by_id: dict[str, RawThreadsPost] = {p.external_id: p for p in ssr_posts}
         for response in captured:
             try:
                 payload = await response.json()
             except Exception:
                 LOGGER.warning("[%s] failed to parse GraphQL response body: %s", self._account.name, response.url)
                 continue
-            posts.extend(_extract_feed_posts(payload))
+            for post in _extract_feed_posts(payload):
+                by_id[post.external_id] = post
 
-        if not captured:
+        LOGGER.info(
+            "[%s] @%s: %d post(s) from page HTML, %d GraphQL page(s), %d total",
+            self._account.name,
+            username,
+            len(ssr_posts),
+            len(captured),
+            len(by_id),
+        )
+        if not by_id:
             LOGGER.warning(
-                "[%s] no feed GraphQL response captured for @%s - dumping page for inspection",
+                "[%s] no posts found for @%s (neither page HTML nor GraphQL) - dumping page",
                 self._account.name,
                 username,
             )
             await self._dump_debug("no_feed_captured")
-        return posts
+        return list(by_id.values())
 
     async def _fetch_post_replies(
         self, username: str, code: str, post_pk: str, pause_seconds: float
