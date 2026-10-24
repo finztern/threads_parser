@@ -114,6 +114,19 @@ async def send_batch(
         return all_ids, set()
 
     results = data.get("results") if isinstance(data, dict) else None
+    if isinstance(results, dict) and all(isinstance(v, int) for v in results.values()):
+        # The local collector answers with aggregate counters, not per-item
+        # statuses, e.g. {"count": 99, "results": {"to_gpu": 16, "dropped": 69, ...}}.
+        # HTTP 2xx means the batch was received; what the collector then did
+        # with each item (to_gpu = accepted, dropped/duplicate/... = filtered)
+        # is only visible here, so log it.
+        LOGGER.info(
+            "store_items: received=%s breakdown=%s",
+            data.get("count"),
+            json.dumps(results, sort_keys=True),
+        )
+        return all_ids, set()
+
     if results is not None and not (isinstance(results, list) and all(isinstance(r, dict) for r in results)):
         # Unknown per-item format (a dict, plain strings, ...): do not crash the cycle.
         # HTTP 2xx -> assume the whole batch was accepted; log a sample so the
