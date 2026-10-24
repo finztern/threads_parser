@@ -340,7 +340,12 @@ class ThreadsBrowserSession:
                 )
                 continue
 
-            top_level = await self._fetch_profile_feed(value, max_feed_scrolls, scroll_pause_seconds)
+            # One bad/slow profile must not abort the whole cycle.
+            try:
+                top_level = await self._fetch_profile_feed(value, max_feed_scrolls, scroll_pause_seconds)
+            except Exception:
+                LOGGER.exception("[%s] failed to fetch profile @%s, skipping this cycle", self._account.name, value)
+                continue
             for post in top_level:
                 all_posts[post.external_id] = post
 
@@ -376,7 +381,7 @@ class ThreadsBrowserSession:
 
         self._page.on("response", on_response)
         try:
-            await self._page.goto(f"{THREADS_BASE_URL}/@{username}", wait_until="networkidle")
+            await self._page.goto(f"{THREADS_BASE_URL}/@{username}", wait_until="domcontentloaded")
             await self._check_login_wall(f"/@{username}")
             ssr_posts = _extract_ssr_feed_posts(await self._page.content(), username)
             for _ in range(max_scrolls):
@@ -424,7 +429,7 @@ class ThreadsBrowserSession:
 
         self._page.on("response", on_response)
         try:
-            await self._page.goto(f"{THREADS_BASE_URL}/@{username}/post/{code}", wait_until="networkidle")
+            await self._page.goto(f"{THREADS_BASE_URL}/@{username}/post/{code}", wait_until="domcontentloaded")
             await self._check_login_wall(f"/@{username}/post/{code}")
             await self._page.wait_for_timeout(int(pause_seconds * 1000))
             ssr_replies = _extract_ssr_reply_posts(await self._page.content(), post_pk)
