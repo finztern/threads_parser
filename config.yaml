@@ -52,9 +52,6 @@ targets:
   - {type: "profile", value: "cnn"}
   - {type: "profile", value: "nytimes"}
   - {type: "profile", value: "mrbeast"}
-  - {type: "profile", value: "cristiano"}
-  - {type: "profile", value: "leomessi"}
-  - {type: "profile", value: "therock"}
   - {type: "profile", value: "kyliejenner"}
   - {type: "profile", value: "selenagomez"}
   - {type: "profile", value: "nasa"}

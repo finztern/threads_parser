@@ -113,6 +113,20 @@ async def send_batch(
         # 2xx with no JSON body: assume the whole batch was accepted.
         return all_ids, set()
 
+    if (
+        isinstance(data, dict)
+        and isinstance(data.get("results"), list)
+        and not all(isinstance(r, dict) for r in data["results"])
+    ):
+        # Unknown per-item format (e.g. plain strings): do not crash the cycle.
+        # HTTP 2xx -> assume the whole batch was accepted; log a sample so the
+        # parsing below can be adapted to the real collector response.
+        LOGGER.warning(
+            "store_items returned unrecognized per-item results, assuming batch accepted. sample=%.300s",
+            json.dumps(data, ensure_ascii=False),
+        )
+        return all_ids, set()
+
     if isinstance(data, dict) and "results" in data:
         confirmed: set[str] = set()
         failed: set[str] = set()
