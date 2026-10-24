@@ -5,3 +5,5 @@ debug/
 __pycache__/
 *.pyc
 .venv/
+proxies.txt
+targets.txt

@@ -7,13 +7,34 @@ domain: "threads.net"
 # How often ConfigStore checks this file's mtime for changes.
 reload_interval_seconds: 5
 
+# "http": browserless, rotating proxy pool, NO accounts (default, light on RAM).
+# "browser": Playwright + account login + per-account proxy (accounts.yaml).
+# Env MODE overrides this.
+mode: "http"
+
+# --- http mode ---
+# One proxy per line, see proxies.txt.example. The file is a secret (not in git).
+proxies_file: "proxies.txt"
+# Optional extra targets, one username per line (re-read every cycle).
+targets_file: "targets.txt"
+# Parallel requests (each one through its own proxy). Raise while RAM/CPU allow.
+http_concurrency: 30
+# Tries per page, each through a different proxy.
+http_attempts: 3
+http_timeout_seconds: 25
+# A proxy that failed/was blocked is skipped for this long.
+proxy_cooldown_seconds: 120
+# Open a post page for replies only if the post is younger than this AND its
+# reply count grew since we last looked.
+reply_post_max_age_seconds: 604800
+
 # Overall rate of items leaving the process towards store_items,
-# shared across ALL accounts via a single TokenBucket.
-target_rate_per_second: 2.0
+# shared by all workers via a single TokenBucket.
+target_rate_per_second: 20.0
 token_wait_timeout_seconds: 10
 
 # How often EACH account worker runs a scrape cycle.
-poll_interval_seconds: 60
+poll_interval_seconds: 30
 poll_jitter_ratio: 0.25
 
 # Drop items older than this before dedup/send.
@@ -33,7 +54,7 @@ scroll_pause_seconds: 1.5
 fetch_replies: true
 
 # In-memory dedup cache size (shared across accounts).
-seen_cache_size: 5000
+seen_cache_size: 300000
 
 # Backoff on send/browser errors.
 base_backoff_seconds: 2.0

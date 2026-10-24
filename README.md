@@ -1,9 +1,30 @@
 # threads_parser
 
-Скрапер Threads.net для Exorde. Архитектура повторяет `reddit_parser`
-(workers, SeenCache, TokenBucket, batch POST в `/store_items`), но сбор
-данных идёт через Playwright + cookies (Cookie Editor JSON) + proxy на
-аккаунт, поскольку у Threads нет открытого read-API уровня `reddit.com/....json`.
+Скрапер Threads.net для Exorde: workers, SeenCache, TokenBucket, batch POST в
+`/store_items`. Два режима (`mode` в `config.yaml` или env `MODE`):
+
+- **http** (по умолчанию): без браузера и без аккаунтов. Публичные страницы Threads
+  отдают посты и ответы в HTML (`<script data-sjs>`), их берёт обычный HTTP-запрос
+  (`curl_cffi`, отпечаток Chrome) через пул ротируемых прокси из `proxies.txt`.
+  Лёгкий по памяти, масштабируется числом прокси и `http_concurrency`.
+- **browser**: Playwright + вход в аккаунт (`storage_state`) + VPN на аккаунт (Xray).
+
+## Быстрый старт (http)
+
+```bash
+cp proxies.txt.example proxies.txt      # свои прокси, по одной в строке
+cp targets.txt.example targets.txt      # доп. профили (необязательно), по одному в строке
+cp .env.example .env
+docker compose up -d --build parser
+docker compose logs -f parser           # строка "http cycle: ..." раз в цикл
+```
+
+`proxies.txt`, `targets.txt`, `.env` — секреты/локальные файлы, в git не попадают.
+
+## Исследовательские скрипты
+
+`scripts/threads_http_probe.py`, `anon_probe.py`, `dump_page.py`, `tiktok_probe.py`,
+`tiktok_discover.py` — разведка страниц (см. docstring в каждом).
 
 ## Структура
 
@@ -25,7 +46,7 @@
 └── .env.example
 ```
 
-## Статус v1
+## Browser mode (статус)
 
 `fetch_new_posts()` реализован — но не через ручную сборку GraphQL-запросов
 (там часть заголовков вроде `x-fb-lsd`/`x-asbd-id`/`x-bloks-version-id`

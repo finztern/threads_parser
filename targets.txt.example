@@ -1,0 +1,5 @@
+# Copy to targets.txt (NOT committed). One Threads username per line, no @ needed.
+# These are added to the `targets` list in config.yaml. Re-read every cycle,
+# so you can edit the file while the parser is running.
+zuck
+mosseri

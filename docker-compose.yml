@@ -1,37 +1,58 @@
-# One Xray (VLESS) container per account -> each account has its own VPN
-# exit from the Trust.Zone subscription. Playwright's proxy for an account is
-# that account's socks5://xray_account_N:1080.
+# Default (http mode): ONE container, no browser, no accounts, no VPN.
+#   cp proxies.txt.example proxies.txt   # your proxies, one per line
+#   docker compose up -d --build parser
+#
+# Browser mode (accounts + per-account VPN via Xray) is kept under profiles:
+#   docker compose --profile browser up -d --build parser_browser
+# Interactive login for browser mode:
+#   docker compose --profile login up --build login_account_1
+#   (noVNC is bound to 127.0.0.1 only, no password - use an SSH tunnel:
+#    ssh -L 6081:127.0.0.1:6081 user@host  ->  http://127.0.0.1:6081/vnc.html)
 #
 # The store_items collector stays on the host, reached via host.docker.internal.
-#
-# "login" profile (not started by `docker compose up`): headed browser + noVNC
-# for a real interactive login through the account's own VPN exit:
-#   docker compose --profile login up --build login_account_1
-# noVNC is bound to 127.0.0.1 only (no password!) - reach it via SSH tunnel:
-#   ssh -L 6081:127.0.0.1:6081 user@host   ->   http://127.0.0.1:6081/vnc.html
 
 services:
+  parser:
+    build: .
+    env_file: .env
+    environment:
+      MODE: http
+      STORE_ENDPOINT: ${STORE_ENDPOINT:-http://host.docker.internal:9000/store_items}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./proxies.txt:/app/proxies.txt:ro
+      - ./targets.txt:/app/targets.txt:ro
+      - ./config.yaml:/app/config.yaml
+      - ./debug:/app/debug
+    restart: unless-stopped
+
+  # ---- browser mode (optional) ----
   xray_account_1:
+    profiles: ["browser", "login"]
     build: ./docker/xray
     environment:
-      VLESS_URI: ${VLESS_URI_ACCOUNT_1}
+      VLESS_URI: ${VLESS_URI_ACCOUNT_1:-}
     networks: [internal]
     restart: unless-stopped
 
   xray_account_2:
+    profiles: ["browser", "login"]
     build: ./docker/xray
     environment:
-      VLESS_URI: ${VLESS_URI_ACCOUNT_2}
+      VLESS_URI: ${VLESS_URI_ACCOUNT_2:-}
     networks: [internal]
     restart: unless-stopped
 
-  parser:
+  parser_browser:
+    profiles: ["browser"]
     build: .
     depends_on:
       - xray_account_1
       - xray_account_2
     env_file: .env
     environment:
+      MODE: browser
       STORE_ENDPOINT: ${STORE_ENDPOINT:-http://host.docker.internal:9000/store_items}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -45,10 +66,10 @@ services:
     restart: unless-stopped
 
   login_account_1:
+    profiles: ["login"]
     build:
       context: .
       dockerfile: docker/login/Dockerfile
-    profiles: ["login"]
     depends_on:
       - xray_account_1
     environment:
@@ -62,10 +83,10 @@ services:
     networks: [internal]
 
   login_account_2:
+    profiles: ["login"]
     build:
       context: .
       dockerfile: docker/login/Dockerfile
-    profiles: ["login"]
     depends_on:
       - xray_account_2
     environment:

@@ -1,0 +1,7 @@
+# Copy to proxies.txt (NOT committed) and put one proxy per line.
+# Accepted formats:
+#   http://user:pass@host:port
+#   socks5://user:pass@host:port
+#   user:pass@host:port        (treated as http://)
+#   host:port:user:pass        (treated as http://)
+user:password@203.0.113.10:3129

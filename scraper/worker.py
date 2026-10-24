@@ -70,10 +70,6 @@ async def _run_cycle(
     seen_cache: SeenCache,
 ) -> None:
     targets = cfg.get("targets", [])
-    max_age_seconds = cfg.get("max_age_seconds", 86400)
-    token_wait_timeout = cfg.get("token_wait_timeout_seconds", 10)
-    batch_max_items = cfg.get("batch_max_items", 200)
-    store_endpoint = cfg["store_endpoint"]
     max_feed_scrolls = cfg.get("max_feed_scrolls", 3)
     scroll_pause_seconds = cfg.get("scroll_pause_seconds", 1.5)
     fetch_replies = cfg.get("fetch_replies", True)
@@ -84,6 +80,37 @@ async def _run_cycle(
         scroll_pause_seconds=scroll_pause_seconds,
         fetch_replies=fetch_replies,
     )
+
+    stats = await dispatch_posts(raw_posts, cfg, client, token_bucket, seen_cache)
+    LOGGER.info(
+        "[%s] cycle: fetched=%d fresh=%d to_send=%d sent=%d unconfirmed=%d "
+        "duplicates=%d rate_limited=%d",
+        account.name,
+        stats["fetched"],
+        stats["fresh"],
+        stats["to_send"],
+        stats["sent"],
+        stats["unconfirmed"],
+        stats["duplicates"],
+        stats["rate_limited"],
+    )
+
+
+async def dispatch_posts(
+    raw_posts: list[RawThreadsPost],
+    cfg: dict,
+    client: httpx.AsyncClient,
+    token_bucket: TokenBucket,
+    seen_cache: SeenCache,
+) -> dict[str, int]:
+    """Shared by browser and http modes: filter by max_age, dedup via
+    SeenCache, rate-limit via TokenBucket, batch-send to store_items.
+    Returns counters for logging.
+    """
+    max_age_seconds = cfg.get("max_age_seconds", 86400)
+    token_wait_timeout = cfg.get("token_wait_timeout_seconds", 10)
+    batch_max_items = cfg.get("batch_max_items", 200)
+    store_endpoint = cfg["store_endpoint"]
 
     now = datetime.now(timezone.utc)
     fresh = [
@@ -118,15 +145,12 @@ async def _run_cycle(
                 await seen_cache.release(post.external_id)
                 unconfirmed += 1
 
-    LOGGER.info(
-        "[%s] cycle: fetched=%d fresh=%d to_send=%d sent=%d unconfirmed=%d "
-        "duplicates=%d rate_limited=%d",
-        account.name,
-        len(raw_posts),
-        len(fresh),
-        len(to_send),
-        sent,
-        unconfirmed,
-        duplicates,
-        rate_limited,
-    )
+    return {
+        "fetched": len(raw_posts),
+        "fresh": len(fresh),
+        "to_send": len(to_send),
+        "sent": sent,
+        "unconfirmed": unconfirmed,
+        "duplicates": duplicates,
+        "rate_limited": rate_limited,
+    }
