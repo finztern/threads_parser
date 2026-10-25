@@ -82,8 +82,10 @@ class ProxyPool:
             self._idx += 1
             if self._banned_until.get(proxy, 0.0) <= now:
                 return proxy
-        # Everything is cooling down: use the one that frees up first.
-        return min(self._proxies, key=lambda p: self._banned_until.get(p, 0.0))
+        # Everything is cooling down: keep rotating instead of hammering a single proxy.
+        proxy = self._proxies[self._idx % n]
+        self._idx += 1
+        return proxy
 
     def ban(self, proxy: str, seconds: float | None = None) -> None:
         self._banned_until[proxy] = time.monotonic() + (seconds if seconds is not None else self._cooldown)

@@ -150,7 +150,7 @@ async def http_runner(
                 rs = registry.stats()
                 LOGGER.info(
                     "http cycle: scraped=%d ok=%d empty=%d not_found=%d failed=%d | requests=%d "
-                    "blocked=%d transport_err=%d proxies_ok=%d/%d reply_pages=%d | known=%d (+%d new) "
+                    "blocked=%d transport_err=%d(timeout=%d) proxies_ok=%d/%d reply_pages=%d | known=%d (+%d new) "
                     "active=%d dead=%d due_now=%d | fetched=%d fresh=%d to_send=%d sent=%d "
                     "duplicates=%d unconfirmed=%d rate_limited=%d | %.0fs (%.1f sent/s, %.1f req/s)",
                     len(batch),
@@ -161,6 +161,7 @@ async def http_runner(
                     delta.get("requests", 0),
                     delta.get("blocked", 0),
                     delta.get("transport_errors", 0),
+                    delta.get("timeouts", 0),
                     pool.available(),
                     len(pool),
                     totals["reply_pages"],

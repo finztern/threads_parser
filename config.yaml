@@ -21,7 +21,7 @@ targets_file: "targets.txt"
 http_concurrency: 150
 # Tries per page, each through a different proxy.
 http_attempts: 3
-http_timeout_seconds: 15
+http_timeout_seconds: 20
 # A proxy that failed/was blocked is skipped for this long.
 proxy_cooldown_seconds: 120
 # A proxy that timed out / refused the connection is skipped much longer.

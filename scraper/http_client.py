@@ -49,7 +49,7 @@ class ThreadsHttpClient:
     def __init__(
         self,
         pool: ProxyPool,
-        timeout: float = 15.0,
+        timeout: float = 20.0,
         attempts: int = 3,
         impersonate: str = "chrome124",
         parse_workers: int | None = 0,
@@ -107,7 +107,15 @@ class ThreadsHttpClient:
                     )
             except Exception as exc:
                 self.stats["transport_errors"] += 1
-                self._pool.ban(proxy, self._error_cooldown)  # dead/slow proxy: keep away for long
+                if "timed out" in str(exc).lower() or "timeout" in str(exc).lower():
+                    # Slow, not necessarily dead (overloaded link / our own concurrency): short pause.
+                    self.stats["timeouts"] += 1
+                    self._pool.ban(proxy, 60.0)
+                else:
+                    self._pool.ban(proxy, self._error_cooldown)  # refused / auth / reset: dead proxy
+                    self.stats["conn_errors"] += 1
+                    if self.stats["conn_errors"] <= 5:
+                        LOGGER.warning("proxy error via %s: %s", mask_proxy(proxy), str(exc)[:200])
                 LOGGER.debug("request via %s failed: %s", mask_proxy(proxy), exc)
                 last = "failed"
                 continue
