@@ -152,7 +152,7 @@ async def http_runner(
                     "http cycle: scraped=%d ok=%d empty=%d not_found=%d failed=%d | requests=%d "
                     "blocked=%d transport_err=%d(timeout=%d) proxies_ok=%d/%d reply_pages=%d | known=%d (+%d new) "
                     "active=%d dead=%d due_now=%d | fetched=%d fresh=%d to_send=%d sent=%d "
-                    "duplicates=%d unconfirmed=%d rate_limited=%d | %.0fs (%.1f sent/s, %.1f req/s)",
+                    "duplicates=%d remote_dup=%d unconfirmed=%d rate_limited=%d | %.0fs (%.1f sent/s, %.1f req/s)",
                     len(batch),
                     totals["profile_ok"],
                     totals["profile_empty"],
@@ -175,6 +175,7 @@ async def http_runner(
                     totals["to_send"],
                     totals["sent"],
                     totals["duplicates"],
+                    totals["remote_duplicates"],
                     totals["unconfirmed"],
                     totals["rate_limited"],
                     time.monotonic() - cycle_start,

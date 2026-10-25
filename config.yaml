@@ -56,6 +56,11 @@ max_age_seconds: 86400
 # Batch POST sizing to /store_items (keep below server BATCH_MAX_ITEMS).
 batch_max_items: 200
 
+# Exorde URL dedup API: URLs it has seen in the last 3 days are not sent to the
+# collector. Empty string disables the check. Errors never block sending.
+url_check_endpoint: "https://url-check.exorde.network/v1/check"
+url_check_timeout_seconds: 10
+
 # In-memory dedup cache size .
 seen_cache_size: 300000
 

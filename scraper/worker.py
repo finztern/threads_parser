@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from scraper.pipeline import RawThreadsPost, build_payload, send_batch
+from scraper.pipeline import RawThreadsPost, build_payload, check_url_duplicates, send_batch
 from scraper.state import SeenCache, TokenBucket
 
 
@@ -32,13 +32,34 @@ async def dispatch_posts(
         p for p in raw_posts if (now - p.created_at.astimezone(timezone.utc)).total_seconds() <= max_age_seconds
     ]
 
-    to_send: list[RawThreadsPost] = []
+    claimed: list[RawThreadsPost] = []
     duplicates = 0
-    rate_limited = 0
     for post in fresh:
-        if not await seen_cache.try_claim(post.external_id):
+        if await seen_cache.try_claim(post.external_id):
+            claimed.append(post)
+        else:
             duplicates += 1
-            continue
+
+    # Skip URLs Exorde already has (compute-saving, fails open on errors).
+    remote_duplicates = 0
+    url_check_endpoint = cfg.get("url_check_endpoint")
+    if url_check_endpoint and claimed:
+        known = await check_url_duplicates(
+            client, url_check_endpoint, [p.url for p in claimed], timeout=cfg.get("url_check_timeout_seconds", 10)
+        )
+        if known:
+            still: list[RawThreadsPost] = []
+            for post in claimed:
+                if post.url in known:
+                    remote_duplicates += 1
+                    await seen_cache.confirm(post.external_id)  # remember: do not ask again
+                else:
+                    still.append(post)
+            claimed = still
+
+    to_send: list[RawThreadsPost] = []
+    rate_limited = 0
+    for post in claimed:
         if not await token_bucket.acquire(timeout=token_wait_timeout):
             rate_limited += 1
             await seen_cache.release(post.external_id)
@@ -67,5 +88,6 @@ async def dispatch_posts(
         "sent": sent,
         "unconfirmed": unconfirmed,
         "duplicates": duplicates,
+        "remote_duplicates": remote_duplicates,
         "rate_limited": rate_limited,
     }

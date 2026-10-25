@@ -85,6 +85,32 @@ async def _post_batch(
     return response
 
 
+async def check_url_duplicates(
+    client: httpx.AsyncClient, endpoint: str, urls: list[str], timeout: float = 10.0, chunk: int = 500
+) -> set[str]:
+    """Ask Exorde's URL dedup API which of `urls` it has already seen (last 3 days).
+
+    Returns only the true duplicates. Purely an optimization: on any error or
+    unexpected answer returns an empty set (fail open - sending a known URL is
+    never punished).
+    """
+    duplicates: set[str] = set()
+    for i in range(0, len(urls), chunk):
+        part = urls[i : i + chunk]
+        try:
+            response = await client.post(endpoint, json={"urls": part}, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, httpx.TransportError, ValueError) as exc:
+            LOGGER.warning("url dedup check failed (%d urls), sending without it: %s", len(part), exc)
+            continue
+        if isinstance(data, list):
+            duplicates.update(u for u in data if isinstance(u, str))
+        else:
+            LOGGER.warning("url dedup check: unexpected answer %.200s", json.dumps(data, ensure_ascii=False))
+    return duplicates
+
+
 async def send_batch(
     client: httpx.AsyncClient, store_endpoint: str, items: list[dict[str, Any]]
 ) -> tuple[set[str], set[str]]:
