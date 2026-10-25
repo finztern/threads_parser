@@ -113,6 +113,7 @@ async def http_runner(
                 reply_max_age = cfg.get("reply_post_max_age_seconds", 7 * 86400)
                 totals: Counter[str] = Counter()
                 stats_before = Counter(client.stats)
+                client.error_kinds.clear()
 
                 async def job(username: str) -> None:
                     async with sem:
@@ -182,6 +183,11 @@ async def http_runner(
                     totals["sent"] / max(time.monotonic() - cycle_start, 0.001),
                     delta.get("requests", 0) / max(time.monotonic() - cycle_start, 0.001),
                 )
+                if client.error_kinds:
+                    LOGGER.info(
+                        "transport errors by kind: %s",
+                        " | ".join(f"{n}x {kind}" for kind, n in client.error_kinds.most_common(4)),
+                    )
 
                 # More targets already due -> go on right away; otherwise wait a bit.
                 if registry.count_due() == 0:

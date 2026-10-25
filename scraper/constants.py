@@ -23,3 +23,5 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 LOGGER = logging.getLogger("threads_parser")
+# httpx logs every request at INFO (thousands of lines per cycle).
+logging.getLogger("httpx").setLevel(logging.WARNING)

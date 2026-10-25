@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import multiprocessing
 import os
+import re
 from collections import Counter, OrderedDict
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
@@ -65,6 +66,7 @@ class ThreadsHttpClient:
         self._impersonate = impersonate
         self._error_cooldown = error_cooldown
         self.stats: Counter[str] = Counter()
+        self.error_kinds: Counter[str] = Counter()  # normalized transport error messages, per cycle
         self._executor: ProcessPoolExecutor | None = None
         if parse_workers is not None:
             workers = parse_workers if parse_workers > 0 else max(1, min(os.cpu_count() or 2, 4))
@@ -107,6 +109,7 @@ class ThreadsHttpClient:
                     )
             except Exception as exc:
                 self.stats["transport_errors"] += 1
+                self.error_kinds[re.sub(r"\d+", "N", str(exc))[:90]] += 1
                 if "timed out" in str(exc).lower() or "timeout" in str(exc).lower():
                     # Slow, not necessarily dead (overloaded link / our own concurrency): short pause.
                     self.stats["timeouts"] += 1
