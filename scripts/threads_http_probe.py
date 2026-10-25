@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from curl_cffi import requests as cffi  # noqa: E402
 
-from scraper.browser import _extract_ssr_feed_posts, _extract_ssr_reply_posts  # noqa: E402
+from scraper.threads_parse import _extract_ssr_feed_posts, _extract_ssr_reply_posts  # noqa: E402
 from scraper.constants import BASE_DIR  # noqa: E402
 
 UA = (

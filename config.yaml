@@ -1,16 +1,11 @@
 # Hot-reloaded at runtime (checked every reload_interval_seconds).
-# Secrets (proxy creds, cookies) are NOT here - see accounts.yaml / .env.
+# Secrets (proxy list) are NOT here - see proxies.txt / .env.
 
 store_endpoint: "http://127.0.0.1:9000/store_items"
 domain: "threads.net"
 
 # How often ConfigStore checks this file's mtime for changes.
 reload_interval_seconds: 5
-
-# "http": browserless, rotating proxy pool, NO accounts (default, light on RAM).
-# "browser": Playwright + account login + per-account proxy (accounts.yaml).
-# Env MODE overrides this.
-mode: "http"
 
 # --- http mode ---
 # One proxy per line, see proxies.txt.example. The file is a secret (not in git).
@@ -51,7 +46,7 @@ discovery:
 target_rate_per_second: 100.0
 token_wait_timeout_seconds: 10
 
-# How often EACH account worker runs a scrape cycle.
+# Pause between cycles when nothing is due.
 poll_interval_seconds: 30
 poll_jitter_ratio: 0.25
 
@@ -61,20 +56,10 @@ max_age_seconds: 86400
 # Batch POST sizing to /store_items (keep below server BATCH_MAX_ITEMS).
 batch_max_items: 200
 
-# How many times to scroll a profile feed per cycle, to trigger the page's
-# own pagination GraphQL calls (we intercept, not send them ourselves).
-max_feed_scrolls: 3
-# Pause between scrolls / after opening a post, so the page's own JS has
-# time to fire its GraphQL request and we can capture the response.
-scroll_pause_seconds: 1.5
-# Whether to also open each post that reports replies and collect its
-# DIRECT replies (one extra page navigation per such post - slower).
-fetch_replies: true
-
-# In-memory dedup cache size (shared across accounts).
+# In-memory dedup cache size .
 seen_cache_size: 300000
 
-# Backoff on send/browser errors.
+# Backoff on send errors.
 base_backoff_seconds: 2.0
 max_backoff_seconds: 120.0
 

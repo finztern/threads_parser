@@ -8,9 +8,6 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 CONFIG_PATH = BASE_DIR / "config.yaml"
-ACCOUNTS_PATH = BASE_DIR / "accounts.yaml"
-COOKIES_DIR = BASE_DIR / "cookies"
-STORAGE_STATE_DIR = BASE_DIR / "storage_state"
 
 # Exorde requires domain to always be "threads.net" for this parser.
 DOMAIN = "threads.net"
@@ -18,7 +15,6 @@ DOMAIN = "threads.net"
 DEFAULT_STORE_ENDPOINT = "http://127.0.0.1:9000/store_items"
 
 HTTP_TIMEOUT_SECONDS = 15.0
-BROWSER_NAV_TIMEOUT_MS = 30_000
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 

@@ -1,7 +1,5 @@
 .git
 .env
-cookies/
-storage_state/
 debug/
 __pycache__/
 *.pyc

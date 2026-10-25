@@ -14,9 +14,9 @@ from scraper.constants import DOMAIN, HTTP_TIMEOUT_SECONDS, LOGGER
 
 
 class RawThreadsPost:
-    """Shape expected from scraper/browser.py for one scraped post/reply.
+    """Shape expected from scraper/threads_parse.py for one scraped post/reply.
 
-    All fields must come from the real page/DOM - never invented.
+    All fields must come from the real page data - never invented.
     """
 
     def __init__(

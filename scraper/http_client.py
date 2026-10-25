@@ -4,7 +4,7 @@ fingerprint) through a rotating proxy pool, no accounts.
 Threads server-renders the first page of a profile and of a post (with its
 direct replies) into the HTML as <script type="application/json" data-sjs>
 blocks, so one GET returns real posts/replies. Parsing reuses the extractors
-in scraper/browser.py (same schema, nothing is invented).
+in scraper/threads_parse.py (nothing is invented).
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from typing import Callable
 
 from curl_cffi.requests import AsyncSession
 
-from scraper.browser import THREADS_BASE_URL, _extract_ssr_feed_posts, _extract_ssr_reply_posts
+from scraper.threads_parse import THREADS_BASE_URL, _extract_ssr_feed_posts, _extract_ssr_reply_posts
 from scraper.constants import LOGGER
 from scraper.pipeline import RawThreadsPost
 from scraper.proxies import ProxyPool, mask_proxy
