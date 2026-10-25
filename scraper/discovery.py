@@ -28,7 +28,7 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 RETRY_AFTER_FAILURE_SECONDS = 60.0
 
 
-@dataclass
+@dataclass(slots=True)
 class TargetState:
     interval: float
     next_due: float

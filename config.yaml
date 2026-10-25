@@ -26,11 +26,12 @@ http_timeout_seconds: 15
 proxy_cooldown_seconds: 120
 # A proxy that timed out / refused the connection is skipped much longer.
 proxy_error_cooldown_seconds: 600
-# Processes that parse downloaded pages (CPU work). 0 = auto (up to 4).
-parse_workers: 0
+# Page parsing is ~3 ms, so inline (null) is cheapest. N>0 = N parser processes
+# (each costs ~80 MB RAM; only useful if one core is saturated at >100 req/s).
+parse_workers: null
 # Open a post page for replies only if the post is younger than this AND its
 # reply count grew since we last looked.
-reply_post_max_age_seconds: 604800
+reply_post_max_age_seconds: 259200
 
 # Self-growing target list: authors of scraped posts/replies become new targets.
 # Active profiles are re-checked every min_interval; silent ones back off (x2)

@@ -70,7 +70,7 @@ async def http_runner(
         pool,
         timeout=cfg.get("http_timeout_seconds", 15),
         attempts=cfg.get("http_attempts", 3),
-        parse_workers=cfg.get("parse_workers", 0),
+        parse_workers=cfg.get("parse_workers"),
         error_cooldown=cfg.get("proxy_error_cooldown_seconds", 600),
     )
     tracker = ReplyTracker()

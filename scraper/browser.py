@@ -116,6 +116,40 @@ def _extract_feed_posts(payload: dict[str, Any]) -> list[RawThreadsPost]:
 # posts never appear as a separate GraphQL response (only pagination does).
 _SJS_BLOCK_RE = re.compile(r'<script type="application/json"[^>]*data-sjs[^>]*>(.*?)</script>', re.S)
 
+try:  # orjson parses JSON several times faster and with less memory than json
+    import orjson as _fastjson
+
+    def _loads(raw: str) -> Any:
+        return _fastjson.loads(raw)
+except ImportError:  # pragma: no cover - optional dependency
+    def _loads(raw: str) -> Any:
+        return json.loads(raw)
+
+
+def _sjs_blocks(html: str, marker: str):
+    """Yield data-sjs script bodies that contain `marker`.
+
+    Plain str.find scanning (C speed): a regex over a ~1 MB page costs far
+    more CPU, and most blocks are irrelevant and never need parsing.
+    """
+    if marker not in html:
+        return
+    pos = 0
+    while True:
+        end = html.find("</script>", pos)
+        if end == -1:
+            return
+        start = html.rfind("<script", pos, end)
+        pos = end + 9
+        if start == -1:
+            continue
+        head_end = html.find(">", start, end)
+        if head_end == -1 or "data-sjs" not in html[start:head_end]:
+            continue
+        body = html[head_end + 1 : end]
+        if marker in body:
+            yield body
+
 
 def _walk_thread_nodes(obj: Any):
     """Yield every dict that holds a 'thread_items' list, at any depth."""
@@ -137,11 +171,9 @@ def _extract_ssr_feed_posts(html: str, username: str) -> list[RawThreadsPost]:
     authored by the requested username are kept.
     """
     posts: dict[str, RawThreadsPost] = {}
-    for raw in _SJS_BLOCK_RE.findall(html):
-        if "thread_items" not in raw:
-            continue
+    for raw in _sjs_blocks(html, "thread_items"):
         try:
-            data = json.loads(raw)
+            data = _loads(raw)
         except ValueError:
             continue
         for node in _walk_thread_nodes(data):
@@ -195,11 +227,9 @@ def _extract_ssr_reply_posts(html: str, parent_post_id: str) -> list[RawThreadsP
     GraphQL post-page response, so _extract_reply_posts does the parsing).
     """
     posts: dict[str, RawThreadsPost] = {}
-    for raw in _SJS_BLOCK_RE.findall(html):
-        if "direct_replies" not in raw:
-            continue
+    for raw in _sjs_blocks(html, "direct_replies"):
         try:
-            data = json.loads(raw)
+            data = _loads(raw)
         except ValueError:
             continue
         for root in _walk_data_roots(data):
