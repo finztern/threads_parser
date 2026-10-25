@@ -68,8 +68,10 @@ async def http_runner(
     LOGGER.info("http mode: %d proxies in pool", len(pool))
     client = ThreadsHttpClient(
         pool,
-        timeout=cfg.get("http_timeout_seconds", 25),
+        timeout=cfg.get("http_timeout_seconds", 15),
         attempts=cfg.get("http_attempts", 3),
+        parse_workers=cfg.get("parse_workers", 0),
+        error_cooldown=cfg.get("proxy_error_cooldown_seconds", 600),
     )
     tracker = ReplyTracker()
 
@@ -101,7 +103,7 @@ async def http_runner(
                     continue
                 registry.sync_seeds(seeds)
 
-                batch = registry.due(max_per_cycle)
+                batch = registry.due(max_per_cycle, float(disc.get("explore_ratio", 0.3)))
                 if not batch:
                     await _sleep(stop_event, min(cfg.get("poll_interval_seconds", 30), registry.seconds_until_next_due() + 0.5))
                     continue
@@ -150,7 +152,7 @@ async def http_runner(
                     "http cycle: scraped=%d ok=%d empty=%d not_found=%d failed=%d | requests=%d "
                     "blocked=%d transport_err=%d proxies_ok=%d/%d reply_pages=%d | known=%d (+%d new) "
                     "active=%d dead=%d due_now=%d | fetched=%d fresh=%d to_send=%d sent=%d "
-                    "duplicates=%d unconfirmed=%d rate_limited=%d | %.0fs",
+                    "duplicates=%d unconfirmed=%d rate_limited=%d | %.0fs (%.1f sent/s, %.1f req/s)",
                     len(batch),
                     totals["profile_ok"],
                     totals["profile_empty"],
@@ -175,6 +177,8 @@ async def http_runner(
                     totals["unconfirmed"],
                     totals["rate_limited"],
                     time.monotonic() - cycle_start,
+                    totals["sent"] / max(time.monotonic() - cycle_start, 0.001),
+                    delta.get("requests", 0) / max(time.monotonic() - cycle_start, 0.001),
                 )
 
                 # More targets already due -> go on right away; otherwise wait a bit.
@@ -183,6 +187,7 @@ async def http_runner(
                     jitter = base * cfg.get("poll_jitter_ratio", 0.25) * (2 * random.random() - 1)
                     await _sleep(stop_event, max(0.0, base + jitter - (time.monotonic() - cycle_start)))
         finally:
+            client.close()
             if discovery_on:
                 registry.save(force=True)
 

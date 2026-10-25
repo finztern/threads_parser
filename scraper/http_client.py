@@ -8,7 +8,11 @@ in scraper/browser.py (same schema, nothing is invented).
 """
 from __future__ import annotations
 
+import asyncio
+import multiprocessing
+import os
 from collections import Counter, OrderedDict
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -45,17 +49,46 @@ class ThreadsHttpClient:
     def __init__(
         self,
         pool: ProxyPool,
-        timeout: float = 25.0,
+        timeout: float = 15.0,
         attempts: int = 3,
         impersonate: str = "chrome124",
+        parse_workers: int | None = 0,
+        error_cooldown: float = 600.0,
     ) -> None:
+        """parse_workers: >0 that many parser processes, 0 = auto, None = parse
+        inline in the event loop (tests). Parsing a ~1 MB page is CPU work, so at
+        tens of requests per second it must not share one core with the network.
+        """
         self._pool = pool
         self._timeout = timeout
         self._attempts = max(1, attempts)
         self._impersonate = impersonate
+        self._error_cooldown = error_cooldown
         self.stats: Counter[str] = Counter()
+        self._executor: ProcessPoolExecutor | None = None
+        if parse_workers is not None:
+            workers = parse_workers if parse_workers > 0 else max(1, min(os.cpu_count() or 2, 4))
+            # "spawn": forking a process that already runs network threads is unsafe.
+            self._executor = ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"))
 
-    async def _fetch_parsed(self, url: str, parse: Callable[[str], list[RawThreadsPost]]) -> tuple[str, list[RawThreadsPost]]:
+    def close(self) -> None:
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+
+    async def _parse(self, fn: Callable[[str, str], list[RawThreadsPost]], html: str, arg: str) -> list[RawThreadsPost]:
+        if self._executor is None:
+            return fn(html, arg)
+        try:
+            return await asyncio.get_running_loop().run_in_executor(self._executor, fn, html, arg)
+        except Exception:
+            # Broken worker pool etc.: never lose the page, parse inline.
+            LOGGER.exception("parser process failed, parsing inline")
+            self.stats["parse_fallback"] += 1
+            return fn(html, arg)
+
+    async def _fetch_parsed(
+        self, url: str, parse: Callable[[str, str], list[RawThreadsPost]], arg: str
+    ) -> tuple[str, list[RawThreadsPost]]:
         """GET url through up to `attempts` different proxies.
 
         Returns (label, items): "ok" (items found), "empty" (page fine but
@@ -74,7 +107,7 @@ class ThreadsHttpClient:
                     )
             except Exception as exc:
                 self.stats["transport_errors"] += 1
-                self._pool.ban(proxy)
+                self._pool.ban(proxy, self._error_cooldown)  # dead/slow proxy: keep away for long
                 LOGGER.debug("request via %s failed: %s", mask_proxy(proxy), exc)
                 last = "failed"
                 continue
@@ -99,7 +132,7 @@ class ThreadsHttpClient:
                 last = "failed"
                 continue
 
-            items = parse(response.text)
+            items = await self._parse(parse, response.text, arg)
             if items:
                 return "ok", items
             self.stats["empty_page"] += 1
@@ -110,16 +143,13 @@ class ThreadsHttpClient:
         return last, []
 
     async def fetch_profile(self, username: str) -> tuple[str, list[RawThreadsPost]]:
-        return await self._fetch_parsed(
-            f"{THREADS_BASE_URL}/@{username}", lambda html: _extract_ssr_feed_posts(html, username)
-        )
+        return await self._fetch_parsed(f"{THREADS_BASE_URL}/@{username}", _extract_ssr_feed_posts, username)
 
     async def fetch_post_replies(
         self, username: str, code: str, post_pk: str
     ) -> tuple[str, list[RawThreadsPost]]:
         return await self._fetch_parsed(
-            f"{THREADS_BASE_URL}/@{username}/post/{code}",
-            lambda html: _extract_ssr_reply_posts(html, post_pk),
+            f"{THREADS_BASE_URL}/@{username}/post/{code}", _extract_ssr_reply_posts, post_pk
         )
 
     async def fetch_target(

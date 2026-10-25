@@ -139,11 +139,35 @@ class TargetRegistry:
         self._dirty = True
 
     # ---- scheduling ----------------------------------------------------
-    def due(self, limit: int) -> list[str]:
+    def due(self, limit: int, explore_ratio: float = 0.3) -> list[str]:
+        """Targets to scrape now: seeds first, then mostly profiles known to
+        post fresh content (they pay off), with `explore_ratio` of the batch
+        kept for never-scraped / unproven ones so the list keeps growing.
+        """
         now = time.time()
-        ready = [(k, t) for k, t in self._targets.items() if t.next_due <= now]
-        ready.sort(key=lambda kt: (not kt[1].seed, kt[1].next_due))
-        return [k for k, _ in ready[:limit]]
+        seeds: list[tuple[str, TargetState]] = []
+        proven: list[tuple[str, TargetState]] = []
+        unproven: list[tuple[str, TargetState]] = []
+        for k, t in self._targets.items():
+            if t.next_due > now:
+                continue
+            (seeds if t.seed else proven if t.fresh_total > 0 else unproven).append((k, t))
+        for group in (seeds, proven, unproven):
+            group.sort(key=lambda kt: kt[1].next_due)
+
+        batch = [k for k, _ in seeds[:limit]]
+        room = limit - len(batch)
+        if room <= 0:
+            return batch
+        explore_quota = int(room * explore_ratio)
+        take_proven = proven[: room - min(explore_quota, len(unproven))]
+        batch += [k for k, _ in take_proven]
+        room = limit - len(batch)
+        batch += [k for k, _ in unproven[:room]]
+        room = limit - len(batch)
+        if room > 0:  # not enough unproven: fill with more proven
+            batch += [k for k, _ in proven[len(take_proven) : len(take_proven) + room]]
+        return batch
 
     def count_due(self) -> int:
         now = time.time()

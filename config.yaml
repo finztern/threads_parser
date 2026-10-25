@@ -18,12 +18,16 @@ proxies_file: "proxies.txt"
 # Optional extra targets, one username per line (re-read every cycle).
 targets_file: "targets.txt"
 # Parallel requests (each one through its own proxy). Raise while RAM/CPU allow.
-http_concurrency: 30
+http_concurrency: 150
 # Tries per page, each through a different proxy.
 http_attempts: 3
-http_timeout_seconds: 25
+http_timeout_seconds: 15
 # A proxy that failed/was blocked is skipped for this long.
 proxy_cooldown_seconds: 120
+# A proxy that timed out / refused the connection is skipped much longer.
+proxy_error_cooldown_seconds: 600
+# Processes that parse downloaded pages (CPU work). 0 = auto (up to 4).
+parse_workers: 0
 # Open a post page for replies only if the post is younger than this AND its
 # reply count grew since we last looked.
 reply_post_max_age_seconds: 604800
@@ -36,12 +40,14 @@ discovery:
   state_file: "data/targets_state.json"
   min_interval_seconds: 300
   max_interval_seconds: 21600
-  max_targets_per_cycle: 400
+  max_targets_per_cycle: 1500
+  # Share of every batch reserved for never-scraped profiles (rest: known-active ones).
+  explore_ratio: 0.3
   max_known_targets: 200000
 
 # Overall rate of items leaving the process towards store_items,
 # shared by all workers via a single TokenBucket.
-target_rate_per_second: 20.0
+target_rate_per_second: 100.0
 token_wait_timeout_seconds: 10
 
 # How often EACH account worker runs a scrape cycle.

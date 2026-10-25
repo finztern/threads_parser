@@ -46,7 +46,8 @@ def build_payload(post: RawThreadsPost) -> dict[str, Any]:
 
     summary must be a JSON *string*, not an object.
     """
-    created_at_iso = post.created_at.astimezone(timezone.utc).isoformat()
+    # exorde_data Item accepts only the "...Z" form, not "+00:00".
+    created_at_iso = post.created_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     summary_obj = {
         "platform": "threads",
