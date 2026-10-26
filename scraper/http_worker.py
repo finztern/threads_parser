@@ -124,15 +124,20 @@ async def http_runner(
                 totals: Counter[str] = Counter()
                 stats_before = Counter(client.stats)
                 client.error_kinds.clear()
+                # Per-cycle timing (seconds summed over targets) to see where the time goes.
+                timing: Counter[str] = Counter()
 
                 async def job(username: str) -> None:
                     async with sem:
                         if stop_event.is_set():
                             return
                         try:
+                            t_fetch = time.monotonic()
                             label, posts, reply_pages = await client.fetch_target(
                                 username, tracker, reply_max_age, fetch_replies
                             )
+                            timing["fetch"] += time.monotonic() - t_fetch
+                            timing["targets"] += 1
                             totals[f"profile_{label}"] += 1
                             totals["reply_pages"] += reply_pages
 
@@ -147,10 +152,15 @@ async def http_runner(
                             if discovery_on and posts:
                                 totals["discovered"] += registry.observe({p.username for p in posts})
                             if posts:
+                                t_wait = time.monotonic()
                                 async with dispatch_sem:
+                                    timing["dispatch_wait"] += time.monotonic() - t_wait
+                                    t_run = time.monotonic()
                                     totals.update(
                                         await dispatch_posts(posts, cfg, store_client, token_bucket, seen_cache)
                                     )
+                                    timing["dispatch_run"] += time.monotonic() - t_run
+                                    timing["dispatches"] += 1
                         except Exception:
                             totals["profile_error"] += 1
                             registry.report(username, "failed", 0)
@@ -195,6 +205,13 @@ async def http_runner(
                     time.monotonic() - cycle_start,
                     totals["sent"] / max(time.monotonic() - cycle_start, 0.001),
                     delta.get("requests", 0) / max(time.monotonic() - cycle_start, 0.001),
+                )
+                LOGGER.info(
+                    "timing per target: fetch=%.1fs dispatch_wait=%.1fs dispatch_run=%.1fs (dispatch_concurrency=%d)",
+                    timing["fetch"] / max(timing["targets"], 1),
+                    timing["dispatch_wait"] / max(timing["dispatches"], 1),
+                    timing["dispatch_run"] / max(timing["dispatches"], 1),
+                    int(cfg.get("dispatch_concurrency", 16)),
                 )
                 if client.error_kinds:
                     LOGGER.info(
