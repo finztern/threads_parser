@@ -72,6 +72,7 @@ async def http_runner(
         attempts=cfg.get("http_attempts", 3),
         parse_workers=cfg.get("parse_workers"),
         error_cooldown=cfg.get("proxy_error_cooldown_seconds", 600),
+        concurrency=int(cfg.get("http_concurrency", 30)),
     )
     tracker = ReplyTracker()
 
@@ -108,7 +109,13 @@ async def http_runner(
                     await _sleep(stop_event, min(cfg.get("poll_interval_seconds", 30), registry.seconds_until_next_due() + 0.5))
                     continue
 
-                sem = asyncio.Semaphore(cfg.get("http_concurrency", 30))
+                # http_concurrency limits HTTP requests (inside the client); targets in flight
+                # get extra headroom so slots stay busy while other targets dispatch.
+                # No requests are in flight between cycles, so the limit can be swapped safely.
+                concurrency = max(1, int(cfg.get("http_concurrency", 30)))
+                client.set_concurrency(concurrency)
+                target_slots = max(concurrency, int(concurrency * float(cfg.get("target_concurrency_factor", 1.5))))
+                sem = asyncio.Semaphore(target_slots)
                 fetch_replies = cfg.get("fetch_replies", True)
                 reply_max_age = cfg.get("reply_post_max_age_seconds", 7 * 86400)
                 totals: Counter[str] = Counter()

@@ -55,16 +55,19 @@ class ThreadsHttpClient:
         impersonate: str = "chrome124",
         parse_workers: int | None = 0,
         error_cooldown: float = 600.0,
+        concurrency: int = 30,
     ) -> None:
         """parse_workers: >0 that many parser processes, 0 = auto, None = parse
         inline in the event loop (tests). Parsing a ~1 MB page is CPU work, so at
         tens of requests per second it must not share one core with the network.
+        concurrency: max simultaneous HTTP requests (all targets together).
         """
         self._pool = pool
         self._timeout = timeout
         self._attempts = max(1, attempts)
         self._impersonate = impersonate
         self._error_cooldown = error_cooldown
+        self._req_sem = asyncio.Semaphore(max(1, int(concurrency)))
         self.stats: Counter[str] = Counter()
         self.error_kinds: Counter[str] = Counter()  # normalized transport error messages, per cycle
         self._executor: ProcessPoolExecutor | None = None
@@ -72,6 +75,10 @@ class ThreadsHttpClient:
             workers = parse_workers if parse_workers > 0 else max(1, min(os.cpu_count() or 2, 4))
             # "spawn": forking a process that already runs network threads is unsafe.
             self._executor = ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"))
+
+    def set_concurrency(self, concurrency: int) -> None:
+        """Hot-reload of http_concurrency. Call only between cycles (no requests in flight)."""
+        self._req_sem = asyncio.Semaphore(max(1, int(concurrency)))
 
     def close(self) -> None:
         if self._executor is not None:
@@ -100,14 +107,22 @@ class ThreadsHttpClient:
         last = "failed"
         empties = 0
         for _ in range(self._attempts):
-            proxy = self._pool.next()
-            self.stats["requests"] += 1
-            try:
-                async with AsyncSession(impersonate=self._impersonate, timeout=self._timeout) as session:
-                    response = await session.get(
-                        url, headers=HEADERS, proxies={"http": proxy, "https": proxy}, allow_redirects=True
-                    )
-            except Exception as exc:
+            response = None
+            error: Exception | None = None
+            # The slot is held only for the network round trip, not for parsing.
+            async with self._req_sem:
+                proxy = self._pool.next()  # pick the proxy once the slot is free (fresh ban state)
+                self.stats["requests"] += 1
+                try:
+                    async with AsyncSession(impersonate=self._impersonate, timeout=self._timeout) as session:
+                        response = await session.get(
+                            url, headers=HEADERS, proxies={"http": proxy, "https": proxy}, allow_redirects=True
+                        )
+                except Exception as exc:
+                    error = exc
+
+            if error is not None:
+                exc = error
                 self.stats["transport_errors"] += 1
                 self.error_kinds[re.sub(r"\d+", "N", str(exc))[:90]] += 1
                 if "timed out" in str(exc).lower() or "timeout" in str(exc).lower():
@@ -182,14 +197,26 @@ class ThreadsHttpClient:
         reply_pages = 0
         if fetch_replies:
             now = datetime.now(timezone.utc)
+            eligible: list[tuple[RawThreadsPost, int]] = []
             for post in posts:
                 count = int((post.extra or {}).get("direct_reply_count") or 0)
                 age = (now - post.created_at.astimezone(timezone.utc)).total_seconds()
                 if age > reply_post_max_age_seconds or not tracker.needs_fetch(post.external_id, count):
                     continue
+                eligible.append((post, count))
+
+            async def one(post: RawThreadsPost) -> tuple[str, list[RawThreadsPost]]:
                 code = post.url.rsplit("/post/", 1)[-1]
-                reply_pages += 1
-                rlabel, replies = await self.fetch_post_replies(username, code, post.external_id)
+                return await self.fetch_post_replies(username, code, post.external_id)
+
+            # Reply pages of one profile run in parallel (bounded by the shared request semaphore).
+            reply_pages = len(eligible)
+            results = await asyncio.gather(*(one(p) for p, _ in eligible), return_exceptions=True)
+            for (post, count), result in zip(eligible, results):
+                if isinstance(result, BaseException):
+                    LOGGER.warning("reply page for %s failed: %s", post.url, result)
+                    continue
+                rlabel, replies = result
                 if rlabel == "ok":
                     tracker.mark(post.external_id, count)
                     for reply in replies:
