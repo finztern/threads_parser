@@ -17,4 +17,12 @@ services:
       - ./config.yaml:/app/config.yaml
       - ./debug:/app/debug
       - ./data:/app/data
+    # Keep the host usable for other jobs: hard CPU cap plus low priority under contention.
+    cpus: "2.0"
+    cpu_shares: 256
+    # Hundreds of parallel proxy connections need many file descriptors.
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     restart: unless-stopped

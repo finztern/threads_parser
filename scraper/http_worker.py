@@ -116,6 +116,9 @@ async def http_runner(
                 client.set_concurrency(concurrency)
                 target_slots = max(concurrency, int(concurrency * float(cfg.get("target_concurrency_factor", 1.5))))
                 sem = asyncio.Semaphore(target_slots)
+                # Many tiny concurrent POSTs (url-check + store_items) starve the httpx pool and the
+                # event loop, so dispatch runs through its own small limit.
+                dispatch_sem = asyncio.Semaphore(max(1, int(cfg.get("dispatch_concurrency", 16))))
                 fetch_replies = cfg.get("fetch_replies", True)
                 reply_max_age = cfg.get("reply_post_max_age_seconds", 7 * 86400)
                 totals: Counter[str] = Counter()
@@ -144,7 +147,10 @@ async def http_runner(
                             if discovery_on and posts:
                                 totals["discovered"] += registry.observe({p.username for p in posts})
                             if posts:
-                                totals.update(await dispatch_posts(posts, cfg, store_client, token_bucket, seen_cache))
+                                async with dispatch_sem:
+                                    totals.update(
+                                        await dispatch_posts(posts, cfg, store_client, token_bucket, seen_cache)
+                                    )
                         except Exception:
                             totals["profile_error"] += 1
                             registry.report(username, "failed", 0)

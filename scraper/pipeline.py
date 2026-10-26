@@ -102,7 +102,10 @@ async def check_url_duplicates(
             response.raise_for_status()
             data = response.json()
         except (httpx.HTTPError, httpx.TransportError, ValueError) as exc:
-            LOGGER.warning("url dedup check failed (%d urls), sending without it: %s", len(part), exc)
+            # str(exc) is empty for httpx timeouts, so always log the exception type.
+            LOGGER.warning(
+                "url dedup check failed (%d urls), sending without it: %s %s", len(part), type(exc).__name__, exc
+            )
             continue
         if isinstance(data, list):
             duplicates.update(u for u in data if isinstance(u, str))
@@ -131,7 +134,7 @@ async def send_batch(
     try:
         response = await _post_batch(client, store_endpoint, items)
     except (httpx.HTTPError, httpx.TransportError) as exc:
-        LOGGER.warning("send_batch failed for %d item(s): %s", len(items), exc)
+        LOGGER.warning("send_batch failed for %d item(s): %s %s", len(items), type(exc).__name__, exc)
         return set(), all_ids
 
     try:

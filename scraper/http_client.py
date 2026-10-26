@@ -12,7 +12,7 @@ import asyncio
 import multiprocessing
 import os
 import re
-from collections import Counter, OrderedDict
+from collections import Counter, OrderedDict, deque
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from typing import Callable
@@ -68,6 +68,7 @@ class ThreadsHttpClient:
         self._impersonate = impersonate
         self._error_cooldown = error_cooldown
         self._req_sem = asyncio.Semaphore(max(1, int(concurrency)))
+        self._conn_window: deque[bool] = deque(maxlen=100)  # True = could not connect to the proxy
         self.stats: Counter[str] = Counter()
         self.error_kinds: Counter[str] = Counter()  # normalized transport error messages, per cycle
         self._executor: ProcessPoolExecutor | None = None
@@ -75,6 +76,11 @@ class ThreadsHttpClient:
             workers = parse_workers if parse_workers > 0 else max(1, min(os.cpu_count() or 2, 4))
             # "spawn": forking a process that already runs network threads is unsafe.
             self._executor = ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"))
+
+    def _local_trouble(self) -> bool:
+        """True when more than half of the last attempts failed to connect at all."""
+        window = self._conn_window
+        return len(window) >= 50 and sum(window) / len(window) > 0.5
 
     def set_concurrency(self, concurrency: int) -> None:
         """Hot-reload of http_concurrency. Call only between cycles (no requests in flight)."""
@@ -130,14 +136,21 @@ class ThreadsHttpClient:
                     self.stats["timeouts"] += 1
                     self._pool.ban(proxy, 60.0)
                 else:
-                    self._pool.ban(proxy, self._error_cooldown)  # refused / auth / reset: dead proxy
                     self.stats["conn_errors"] += 1
+                    self._conn_window.append(True)
+                    if self._local_trouble():
+                        # Most attempts cannot connect at all: our side (fds, conntrack, provider
+                        # connection cap) is the problem. Banning proxies one by one would empty the pool.
+                        self.stats["conn_errors_unbanned"] += 1
+                    else:
+                        self._pool.ban(proxy, self._error_cooldown)  # refused / auth / reset: dead proxy
                     if self.stats["conn_errors"] <= 5:
                         LOGGER.warning("proxy error via %s: %s", mask_proxy(proxy), str(exc)[:200])
                 LOGGER.debug("request via %s failed: %s", mask_proxy(proxy), exc)
                 last = "failed"
                 continue
 
+            self._conn_window.append(False)
             status = response.status_code
             if status == 404:
                 self.stats["not_found"] += 1
