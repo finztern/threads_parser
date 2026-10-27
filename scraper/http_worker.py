@@ -20,6 +20,7 @@ from scraper.discovery import TargetRegistry
 from scraper.http_client import ReplyTracker, ThreadsHttpClient
 from scraper.proxies import ProxyPool
 from scraper.state import SeenCache, TokenBucket
+from scraper.pipeline import set_url_check_client
 from scraper.worker import dispatch_posts
 
 
@@ -95,6 +96,14 @@ async def http_runner(
         retries=2,
         limits=httpx.Limits(max_connections=128, max_keepalive_connections=128, keepalive_expiry=10.0),
     )
+    # url-check gets its own client with NO keepalive: each request opens a fresh connection
+    # (like curl does), so a connection silently dropped on the way can never hang a request.
+    url_client = httpx.AsyncClient(
+        transport=httpx.AsyncHTTPTransport(
+            retries=1, limits=httpx.Limits(max_connections=8, max_keepalive_connections=0)
+        )
+    )
+    set_url_check_client(url_client)
     loop_lag = {"max": 0.0}
     lag_task = asyncio.create_task(_lag_monitor(loop_lag))
     async with httpx.AsyncClient(transport=store_transport) as store_client:
@@ -261,6 +270,8 @@ async def http_runner(
                     await _sleep(stop_event, max(0.0, base + jitter - (time.monotonic() - cycle_start)))
         finally:
             lag_task.cancel()
+            set_url_check_client(None)
+            await url_client.aclose()
             client.close()
             if discovery_on:
                 registry.save(force=True)
