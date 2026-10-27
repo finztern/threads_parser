@@ -3,7 +3,9 @@ send_batch: POST a batch of items to STORE_ENDPOINT (/store_items).
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -103,6 +105,14 @@ async def _post_batch(
     return response
 
 
+# url-check is a shared external service: when it keeps timing out, skip it for a while instead of
+# holding every dispatch for the full timeout (fail open: items are then sent without the check).
+_URLCHECK_FAIL_LIMIT = 5
+_URLCHECK_PAUSE_SECONDS = 30.0
+_urlcheck_failures = 0
+_urlcheck_skip_until = 0.0
+
+
 async def check_url_duplicates(
     client: httpx.AsyncClient, endpoint: str, urls: list[str], timeout: float = 10.0, chunk: int = 500
 ) -> set[str]:
@@ -112,16 +122,26 @@ async def check_url_duplicates(
     unexpected answer returns an empty set (fail open - sending a known URL is
     never punished).
     """
+    global _urlcheck_failures, _urlcheck_skip_until
     duplicates: set[str] = set()
+    if time.monotonic() < _urlcheck_skip_until:
+        return duplicates
     for i in range(0, len(urls), chunk):
         part = urls[i : i + chunk]
         try:
             response = await client.post(endpoint, json={"urls": part}, timeout=timeout)
             response.raise_for_status()
             data = response.json()
+            _urlcheck_failures = 0
         except (httpx.HTTPError, httpx.TransportError, ValueError) as exc:
             # str(exc) is empty for httpx timeouts, so always log the exception type.
             LOGGER.warning("url dedup check failed (%d urls), sending without it: %s", len(part), describe_exc(exc))
+            _urlcheck_failures += 1
+            if _urlcheck_failures >= _URLCHECK_FAIL_LIMIT:
+                _urlcheck_failures = 0
+                _urlcheck_skip_until = time.monotonic() + _URLCHECK_PAUSE_SECONDS
+                LOGGER.warning("url dedup check paused for %.0fs after repeated failures", _URLCHECK_PAUSE_SECONDS)
+                break
             continue
         if isinstance(data, list):
             duplicates.update(u for u in data if isinstance(u, str))
@@ -147,10 +167,23 @@ async def send_batch(
 
     all_ids = {item["external_id"] for item in items}
 
-    try:
-        response = await _post_batch(client, store_endpoint, items)
-    except (httpx.HTTPError, httpx.TransportError) as exc:
-        LOGGER.warning("send_batch failed for %d item(s): %s", len(items), describe_exc(exc))
+    response: httpx.Response | None = None
+    last_exc: BaseException | None = None
+    # A refused/failed CONNECT means the request never reached the collector, so repeating it cannot
+    # duplicate items. This rides out short collector gaps (restart, full accept queue).
+    for delay in (0.0, 1.0, 2.0, 4.0):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            response = await _post_batch(client, store_endpoint, items)
+            break
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            last_exc = exc
+        except (httpx.HTTPError, httpx.TransportError) as exc:
+            last_exc = exc
+            break
+    if response is None:
+        LOGGER.warning("send_batch failed for %d item(s): %s", len(items), describe_exc(last_exc) if last_exc else "?")
         return set(), all_ids
 
     try:
