@@ -113,6 +113,7 @@ _STORE_SEM = asyncio.Semaphore(max(1, int(os.getenv("STORE_CONCURRENCY", "12")))
 # url-check is a shared external service: when it keeps timing out, skip it for a while instead of
 # holding every dispatch for the full timeout (fail open: items are then sent without the check).
 _URLCHECK_FAIL_LIMIT = 5
+_URLCHECK_ATTEMPT_TIMEOUT = 3.0  # seconds per attempt (2 attempts per chunk)
 _URLCHECK_PAUSE_SECONDS = 30.0
 _urlcheck_failures = 0
 _urlcheck_skip_until = 0.0
@@ -133,14 +134,29 @@ async def _query_url_check(
         return duplicates
     for i in range(0, len(urls), chunk):
         part = urls[i : i + chunk]
-        try:
-            response = await client.post(endpoint, json={"urls": part}, timeout=timeout)
-            response.raise_for_status()
-            data = response.json()
+        data: Any = None
+        error: BaseException | None = None
+        # The service answers in ~0.3-1 s but now and then simply never replies to one request.
+        # A short timeout + one retry (the client opens a fresh connection) rides that out.
+        for _attempt in range(2):
+            try:
+                response = await client.post(
+                    endpoint, json={"urls": part}, timeout=min(timeout, _URLCHECK_ATTEMPT_TIMEOUT)
+                )
+                response.raise_for_status()
+                data = response.json()
+                error = None
+                break
+            except httpx.TimeoutException as exc:
+                error = exc
+            except (httpx.HTTPError, httpx.TransportError, ValueError) as exc:
+                error = exc
+                break
+        if error is None:
             _urlcheck_failures = 0
-        except (httpx.HTTPError, httpx.TransportError, ValueError) as exc:
+        else:
             # str(exc) is empty for httpx timeouts, so always log the exception type.
-            LOGGER.warning("url dedup check failed (%d urls), sending without it: %s", len(part), describe_exc(exc))
+            LOGGER.warning("url dedup check failed (%d urls), sending without it: %s", len(part), describe_exc(error))
             _urlcheck_failures += 1
             if _urlcheck_failures >= _URLCHECK_FAIL_LIMIT:
                 _urlcheck_failures = 0
