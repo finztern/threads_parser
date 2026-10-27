@@ -88,7 +88,14 @@ async def http_runner(
     if discovery_on:
         registry.load()
 
-    async with httpx.AsyncClient() as store_client:
+    # One client for url-check and store_items. Defaults (20 keepalive connections, 5 s expiry, no
+    # retries) force a new TLS handshake for most of ~100 parallel dispatches and fail under bursts.
+    # retries=2 only repeats failed CONNECTs, so nothing is ever sent twice.
+    store_transport = httpx.AsyncHTTPTransport(
+        retries=2,
+        limits=httpx.Limits(max_connections=128, max_keepalive_connections=128, keepalive_expiry=60.0),
+    )
+    async with httpx.AsyncClient(transport=store_transport) as store_client:
         try:
             while not stop_event.is_set():
                 cycle_start = time.monotonic()
