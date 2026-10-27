@@ -93,7 +93,7 @@ async def http_runner(
     # retries=2 only repeats failed CONNECTs, so nothing is ever sent twice.
     store_transport = httpx.AsyncHTTPTransport(
         retries=2,
-        limits=httpx.Limits(max_connections=128, max_keepalive_connections=128, keepalive_expiry=60.0),
+        limits=httpx.Limits(max_connections=128, max_keepalive_connections=128, keepalive_expiry=10.0),
     )
     loop_lag = {"max": 0.0}
     lag_task = asyncio.create_task(_lag_monitor(loop_lag))
