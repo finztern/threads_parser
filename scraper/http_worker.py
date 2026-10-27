@@ -95,6 +95,8 @@ async def http_runner(
         retries=2,
         limits=httpx.Limits(max_connections=128, max_keepalive_connections=128, keepalive_expiry=60.0),
     )
+    loop_lag = {"max": 0.0}
+    lag_task = asyncio.create_task(_lag_monitor(loop_lag))
     async with httpx.AsyncClient(transport=store_transport) as store_client:
         try:
             while not stop_event.is_set():
@@ -237,6 +239,8 @@ async def http_runner(
                     totals["reply_pages"],
                     totals["sent_replies"] / max(totals["reply_pages"], 1),
                 )
+                LOGGER.info("event loop lag: max=%.2fs this cycle", loop_lag["max"])
+                loop_lag["max"] = 0.0
                 LOGGER.info(
                     "timing per target: fetch=%.1fs dispatch_wait=%.1fs dispatch_run=%.1fs (dispatch_concurrency=%d)",
                     timing["fetch"] / max(timing["targets"], 1),
@@ -256,9 +260,18 @@ async def http_runner(
                     jitter = base * cfg.get("poll_jitter_ratio", 0.25) * (2 * random.random() - 1)
                     await _sleep(stop_event, max(0.0, base + jitter - (time.monotonic() - cycle_start)))
         finally:
+            lag_task.cancel()
             client.close()
             if discovery_on:
                 registry.save(force=True)
+
+
+async def _lag_monitor(lag: dict[str, float]) -> None:
+    """Measures how late a 0.5 s sleep wakes up: a blocked event loop shows as lag (and as connect timeouts)."""
+    while True:
+        started = time.monotonic()
+        await asyncio.sleep(0.5)
+        lag["max"] = max(lag["max"], time.monotonic() - started - 0.5)
 
 
 async def _sleep(stop_event: asyncio.Event, seconds: float) -> None:

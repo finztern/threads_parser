@@ -73,6 +73,24 @@ def build_payload(post: RawThreadsPost) -> dict[str, Any]:
     wait=wait_exponential(multiplier=1, min=1, max=10),
     reraise=True,
 )
+def describe_exc(exc: BaseException) -> str:
+    """Exception type + message + underlying causes (with errno), e.g. the OSError hidden behind
+    httpx's generic "All connection attempts failed".
+    """
+    parts: list[str] = []
+    queue: list[BaseException] = [exc]
+    while queue and len(parts) < 6:
+        cur = queue.pop(0)
+        errno = getattr(cur, "errno", None)
+        text = str(cur)[:80]
+        parts.append(f"{type(cur).__name__}(errno={errno}) {text}" if errno else f"{type(cur).__name__} {text}")
+        queue.extend(getattr(cur, "exceptions", None) or [])
+        nxt = cur.__cause__ or cur.__context__
+        if nxt is not None:
+            queue.append(nxt)
+    return " <- ".join(parts)
+
+
 async def _post_batch(
     client: httpx.AsyncClient, store_endpoint: str, items: list[dict[str, Any]]
 ) -> httpx.Response:
@@ -103,9 +121,7 @@ async def check_url_duplicates(
             data = response.json()
         except (httpx.HTTPError, httpx.TransportError, ValueError) as exc:
             # str(exc) is empty for httpx timeouts, so always log the exception type.
-            LOGGER.warning(
-                "url dedup check failed (%d urls), sending without it: %s %s", len(part), type(exc).__name__, exc
-            )
+            LOGGER.warning("url dedup check failed (%d urls), sending without it: %s", len(part), describe_exc(exc))
             continue
         if isinstance(data, list):
             duplicates.update(u for u in data if isinstance(u, str))
@@ -134,7 +150,7 @@ async def send_batch(
     try:
         response = await _post_batch(client, store_endpoint, items)
     except (httpx.HTTPError, httpx.TransportError) as exc:
-        LOGGER.warning("send_batch failed for %d item(s): %s %s", len(items), type(exc).__name__, exc)
+        LOGGER.warning("send_batch failed for %d item(s): %s", len(items), describe_exc(exc))
         return set(), all_ids
 
     try:
