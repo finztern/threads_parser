@@ -110,7 +110,7 @@ async def http_runner(
                     continue
 
                 # http_concurrency limits HTTP requests (inside the client); targets in flight
-                # get extra headroom so slots stay busy while other targets dispatch.
+                # get a little headroom so request slots stay busy between a target's two fetch rounds.
                 # No requests are in flight between cycles, so the limit can be swapped safely.
                 concurrency = max(1, int(cfg.get("http_concurrency", 30)))
                 client.set_concurrency(concurrency)
@@ -118,7 +118,7 @@ async def http_runner(
                 sem = asyncio.Semaphore(target_slots)
                 # Many tiny concurrent POSTs (url-check + store_items) starve the httpx pool and the
                 # event loop, so dispatch runs through its own small limit.
-                dispatch_sem = asyncio.Semaphore(max(1, int(cfg.get("dispatch_concurrency", 16))))
+                dispatch_sem = asyncio.Semaphore(max(1, int(cfg.get("dispatch_concurrency", 64))))
                 fetch_replies = cfg.get("fetch_replies", True)
                 reply_max_age = cfg.get("reply_post_max_age_seconds", 7 * 86400)
                 totals: Counter[str] = Counter()
@@ -128,6 +128,9 @@ async def http_runner(
                 timing: Counter[str] = Counter()
 
                 async def job(username: str) -> None:
+                    posts: list = []
+                    # The target slot covers only the network part. Dispatch (url-check + POST) runs
+                    # after the slot is released, so slow sends never starve fetching.
                     async with sem:
                         if stop_event.is_set():
                             return
@@ -151,20 +154,25 @@ async def http_runner(
                             registry.report(username, label, own_fresh)
                             if discovery_on and posts:
                                 totals["discovered"] += registry.observe({p.username for p in posts})
-                            if posts:
-                                t_wait = time.monotonic()
-                                async with dispatch_sem:
-                                    timing["dispatch_wait"] += time.monotonic() - t_wait
-                                    t_run = time.monotonic()
-                                    totals.update(
-                                        await dispatch_posts(posts, cfg, store_client, token_bucket, seen_cache)
-                                    )
-                                    timing["dispatch_run"] += time.monotonic() - t_run
-                                    timing["dispatches"] += 1
                         except Exception:
                             totals["profile_error"] += 1
                             registry.report(username, "failed", 0)
                             LOGGER.exception("target @%s failed", username)
+                            return
+
+                    if not posts:
+                        return
+                    try:
+                        t_wait = time.monotonic()
+                        async with dispatch_sem:
+                            timing["dispatch_wait"] += time.monotonic() - t_wait
+                            t_run = time.monotonic()
+                            totals.update(await dispatch_posts(posts, cfg, store_client, token_bucket, seen_cache))
+                            timing["dispatch_run"] += time.monotonic() - t_run
+                            timing["dispatches"] += 1
+                    except Exception:
+                        totals["dispatch_error"] += 1
+                        LOGGER.exception("dispatch for @%s failed", username)
 
                 await asyncio.gather(*(job(u) for u in batch))
                 if discovery_on:
@@ -211,7 +219,7 @@ async def http_runner(
                     timing["fetch"] / max(timing["targets"], 1),
                     timing["dispatch_wait"] / max(timing["dispatches"], 1),
                     timing["dispatch_run"] / max(timing["dispatches"], 1),
-                    int(cfg.get("dispatch_concurrency", 16)),
+                    int(cfg.get("dispatch_concurrency", 64)),
                 )
                 if client.error_kinds:
                     LOGGER.info(
