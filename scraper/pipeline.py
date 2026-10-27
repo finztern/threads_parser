@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -105,6 +106,10 @@ async def _post_batch(
     return response
 
 
+# Max simultaneous POSTs to the collector. A burst of ~100 parallel connects can overflow the accept
+# queue of a simple single-process collector, which then answers with "connection refused".
+_STORE_SEM = asyncio.Semaphore(max(1, int(os.getenv("STORE_CONCURRENCY", "12"))))
+
 # url-check is a shared external service: when it keeps timing out, skip it for a while instead of
 # holding every dispatch for the full timeout (fail open: items are then sent without the check).
 _URLCHECK_FAIL_LIMIT = 5
@@ -175,7 +180,8 @@ async def send_batch(
         if delay:
             await asyncio.sleep(delay)
         try:
-            response = await _post_batch(client, store_endpoint, items)
+            async with _STORE_SEM:
+                response = await _post_batch(client, store_endpoint, items)
             break
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             last_exc = exc
