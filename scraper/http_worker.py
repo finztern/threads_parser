@@ -17,10 +17,10 @@ import httpx
 from scraper.config import ConfigStore
 from scraper.constants import BASE_DIR, LOGGER
 from scraper.discovery import TargetRegistry
-from scraper.http_client import ReplyTracker, ThreadsHttpClient
+from scraper.http_client import ReplyTracker, ThreadsHttpClient, make_url_check_poster
 from scraper.proxies import ProxyPool
 from scraper.state import SeenCache, TokenBucket
-from scraper.pipeline import set_url_check_client
+from scraper.pipeline import configure_url_check, set_url_check_poster
 from scraper.worker import dispatch_posts
 
 
@@ -96,14 +96,8 @@ async def http_runner(
         retries=2,
         limits=httpx.Limits(max_connections=128, max_keepalive_connections=128, keepalive_expiry=10.0),
     )
-    # url-check gets its own client with NO keepalive: each request opens a fresh connection
-    # (like curl does), so a connection silently dropped on the way can never hang a request.
-    url_client = httpx.AsyncClient(
-        transport=httpx.AsyncHTTPTransport(
-            retries=1, limits=httpx.Limits(max_connections=8, max_keepalive_connections=0)
-        )
-    )
-    set_url_check_client(url_client)
+    # url-check goes through the proxy pool (fresh proxy + connection per request).
+    set_url_check_poster(make_url_check_poster(pool) if cfg.get("url_check_via_proxy", True) else None)
     loop_lag = {"max": 0.0}
     lag_task = asyncio.create_task(_lag_monitor(loop_lag))
     async with httpx.AsyncClient(transport=store_transport) as store_client:
@@ -137,6 +131,11 @@ async def http_runner(
                 # Many tiny concurrent POSTs (url-check + store_items) starve the httpx pool and the
                 # event loop, so dispatch runs through its own small limit.
                 dispatch_sem = asyncio.Semaphore(max(1, int(cfg.get("dispatch_concurrency", 64))))
+                configure_url_check(
+                    cfg.get("url_check_batch_size", 300),
+                    cfg.get("url_check_min_batch", 30),
+                    cfg.get("url_check_max_wait_seconds", 2.0),
+                )
                 fetch_replies = cfg.get("fetch_replies", True)
                 reply_max_age = cfg.get("reply_post_max_age_seconds", 7 * 86400)
                 totals: Counter[str] = Counter()
@@ -236,7 +235,7 @@ async def http_runner(
                 fresh_top = totals["fresh"] - totals["fresh_replies"]
                 LOGGER.info(
                     "yield: top-level fresh=%d new=%d (%.0f%%) from ~%d profile pages = %.2f new/page | "
-                    "replies fresh=%d new=%d (%.0f%%) from %d reply pages = %.2f new/page",
+                    "replies fresh=%d new=%d (%.0f%%) from %d reply pages = %.2f new/page | url_unverified=%d",
                     fresh_top,
                     sent_top,
                     100.0 * sent_top / max(fresh_top, 1),
@@ -247,6 +246,7 @@ async def http_runner(
                     100.0 * totals["sent_replies"] / max(totals["fresh_replies"], 1),
                     totals["reply_pages"],
                     totals["sent_replies"] / max(totals["reply_pages"], 1),
+                    totals["url_unverified"],
                 )
                 LOGGER.info("event loop lag: max=%.2fs this cycle", loop_lag["max"])
                 loop_lag["max"] = 0.0
@@ -270,8 +270,7 @@ async def http_runner(
                     await _sleep(stop_event, max(0.0, base + jitter - (time.monotonic() - cycle_start)))
         finally:
             lag_task.cancel()
-            set_url_check_client(None)
-            await url_client.aclose()
+            set_url_check_poster(None)
             client.close()
             if discovery_on:
                 registry.save(force=True)

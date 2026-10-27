@@ -40,24 +40,28 @@ async def dispatch_posts(
         else:
             duplicates += 1
 
-    # Skip URLs Exorde already has (compute-saving, fails open on errors).
+    # Skip URLs Exorde already has. FAIL CLOSED: if the check did not succeed for a URL it is not
+    # sent (the claim is released, so it is retried on a later cycle).
     remote_duplicates = 0
     remote_duplicates_replies = 0  # subset of remote_duplicates that are replies (yield statistics)
+    url_unverified = 0
     url_check_endpoint = cfg.get("url_check_endpoint")
     if url_check_endpoint and claimed:
-        known = await check_url_duplicates(
+        known, unverified = await check_url_duplicates(
             client, url_check_endpoint, [p.url for p in claimed], timeout=cfg.get("url_check_timeout_seconds", 10)
         )
-        if known:
-            still: list[RawThreadsPost] = []
-            for post in claimed:
-                if post.url in known:
-                    remote_duplicates += 1
-                    remote_duplicates_replies += bool(post.external_parent_id)
-                    await seen_cache.confirm(post.external_id)  # remember: do not ask again
-                else:
-                    still.append(post)
-            claimed = still
+        still: list[RawThreadsPost] = []
+        for post in claimed:
+            if post.url in known:
+                remote_duplicates += 1
+                remote_duplicates_replies += bool(post.external_parent_id)
+                await seen_cache.confirm(post.external_id)  # remember: do not ask again
+            elif post.url in unverified:
+                url_unverified += 1
+                await seen_cache.release(post.external_id)
+            else:
+                still.append(post)
+        claimed = still
 
     to_send: list[RawThreadsPost] = []
     rate_limited = 0
@@ -98,4 +102,5 @@ async def dispatch_posts(
         "fresh_replies": sum(1 for p in fresh if p.external_parent_id),
         "remote_dup_replies": remote_duplicates_replies,
         "sent_replies": sent_replies,
+        "url_unverified": url_unverified,
     }

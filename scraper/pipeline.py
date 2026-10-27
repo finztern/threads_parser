@@ -8,7 +8,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -110,112 +110,122 @@ async def _post_batch(
 # queue of a simple single-process collector, which then answers with "connection refused".
 _STORE_SEM = asyncio.Semaphore(max(1, int(os.getenv("STORE_CONCURRENCY", "12"))))
 
-# url-check is a shared external service: when it keeps timing out, skip it for a while instead of
-# holding every dispatch for the full timeout (fail open: items are then sent without the check).
+# --- url-check ---------------------------------------------------------------------------------
+# Exorde's URL dedup API is queried in batches by ONE sender task (all targets queue their URLs),
+# optionally through the proxy pool (set_url_check_poster). It fails CLOSED: a URL whose check did
+# not succeed is reported as "unverified" and is never sent.
 _URLCHECK_FAIL_LIMIT = 5
-_URLCHECK_ATTEMPT_TIMEOUT = 3.0  # seconds per attempt (2 attempts per chunk)
 _URLCHECK_PAUSE_SECONDS = 30.0
 _urlcheck_failures = 0
 _urlcheck_skip_until = 0.0
 
-
-async def _query_url_check(
-    client: httpx.AsyncClient, endpoint: str, urls: list[str], timeout: float = 10.0, chunk: int = 500
-) -> set[str]:
-    """Ask Exorde's URL dedup API which of `urls` it has already seen (last 3 days).
-
-    Returns only the true duplicates. Purely an optimization: on any error or
-    unexpected answer returns an empty set (fail open - sending a known URL is
-    never punished).
-    """
-    global _urlcheck_failures, _urlcheck_skip_until
-    duplicates: set[str] = set()
-    if time.monotonic() < _urlcheck_skip_until:
-        return duplicates
-    for i in range(0, len(urls), chunk):
-        part = urls[i : i + chunk]
-        data: Any = None
-        error: BaseException | None = None
-        # The service answers in ~0.3-1 s but now and then simply never replies to one request.
-        # A short timeout + one retry (the client opens a fresh connection) rides that out.
-        for _attempt in range(2):
-            try:
-                response = await client.post(
-                    endpoint, json={"urls": part}, timeout=min(timeout, _URLCHECK_ATTEMPT_TIMEOUT)
-                )
-                response.raise_for_status()
-                data = response.json()
-                error = None
-                break
-            except httpx.TimeoutException as exc:
-                error = exc
-            except (httpx.HTTPError, httpx.TransportError, ValueError) as exc:
-                error = exc
-                break
-        if error is None:
-            _urlcheck_failures = 0
-        else:
-            # str(exc) is empty for httpx timeouts, so always log the exception type.
-            LOGGER.warning("url dedup check failed (%d urls), sending without it: %s", len(part), describe_exc(error))
-            _urlcheck_failures += 1
-            if _urlcheck_failures >= _URLCHECK_FAIL_LIMIT:
-                _urlcheck_failures = 0
-                _urlcheck_skip_until = time.monotonic() + _URLCHECK_PAUSE_SECONDS
-                LOGGER.warning("url dedup check paused for %.0fs after repeated failures", _URLCHECK_PAUSE_SECONDS)
-                break
-            continue
-        if isinstance(data, list):
-            duplicates.update(u for u in data if isinstance(u, str))
-        else:
-            LOGGER.warning("url dedup check: unexpected answer %.200s", json.dumps(data, ensure_ascii=False))
-    return duplicates
-
-
-# --- url-check micro-batching: ONE sender for all targets ---------------------------------------
-# Every dispatch used to fire its own tiny request (~25/s). Now they queue their URLs and a single
-# flusher task sends them together every _URL_WINDOW_SECONDS. A dedicated client without keepalive
-# (set_url_check_client) avoids reusing connections that were silently dropped on the way.
-_URL_WINDOW_SECONDS = 0.3
-_URL_CLIENT: httpx.AsyncClient | None = None
+_URL_BATCH_SIZE = 300  # max urls per request
+_URL_MIN_BATCH = 30  # wait until at least this many urls are queued ...
+_URL_MAX_WAIT_SECONDS = 2.0  # ... but never longer than this
+UrlPoster = Callable[[str, list[str], float], Awaitable[Any]]  # (endpoint, urls, timeout) -> parsed JSON
+_URL_POSTER: UrlPoster | None = None
 _URL_PENDING: list[tuple[list[str], asyncio.Future]] = []
 _URL_FLUSHER: asyncio.Task | None = None
 
 
-def set_url_check_client(client: httpx.AsyncClient | None) -> None:
-    global _URL_CLIENT
-    _URL_CLIENT = client
+def configure_url_check(batch_size: int, min_batch: int, max_wait: float = 2.0) -> None:
+    global _URL_BATCH_SIZE, _URL_MIN_BATCH, _URL_MAX_WAIT_SECONDS
+    _URL_BATCH_SIZE = max(1, int(batch_size))
+    _URL_MIN_BATCH = max(1, min(int(min_batch), _URL_BATCH_SIZE))
+    _URL_MAX_WAIT_SECONDS = max(0.0, float(max_wait))
 
 
-async def _url_flush_loop(client: httpx.AsyncClient, endpoint: str, timeout: float, chunk: int) -> None:
+def set_url_check_poster(poster: UrlPoster | None) -> None:
+    """Route url-check requests through `poster` (e.g. the proxy pool) instead of the shared client."""
+    global _URL_POSTER
+    _URL_POSTER = poster
+
+
+async def _post_url_check(client: httpx.AsyncClient, endpoint: str, urls: list[str], timeout: float) -> Any:
+    if _URL_POSTER is not None:
+        return await _URL_POSTER(endpoint, urls, timeout)
+    response = await client.post(endpoint, json={"urls": urls}, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+async def _query_url_check(
+    client: httpx.AsyncClient, endpoint: str, urls: list[str], timeout: float
+) -> tuple[set[str], set[str]]:
+    """Ask Exorde which of `urls` it already has (last 3 days).
+
+    Returns (duplicates, unverified). Unverified = the check failed for them (after one retry);
+    the caller must NOT send those.
+    """
+    global _urlcheck_failures, _urlcheck_skip_until
+    duplicates: set[str] = set()
+    unverified: set[str] = set()
+    for i in range(0, len(urls), _URL_BATCH_SIZE):
+        part = urls[i : i + _URL_BATCH_SIZE]
+        if time.monotonic() < _urlcheck_skip_until:
+            unverified.update(part)
+            continue
+        data: Any = None
+        error: BaseException | None = None
+        for _attempt in range(2):  # the service sometimes never answers one request: retry (new proxy)
+            try:
+                data = await _post_url_check(client, endpoint, part, timeout)
+                error = None
+                break
+            except Exception as exc:
+                error = exc
+        if error is None and isinstance(data, list):
+            _urlcheck_failures = 0
+            duplicates.update(u for u in data if isinstance(u, str))
+            continue
+        unverified.update(part)
+        if error is not None:
+            LOGGER.warning("url check failed (%d urls), not sending them: %s", len(part), describe_exc(error))
+        else:
+            LOGGER.warning("url check: unexpected answer %.200s", json.dumps(data, ensure_ascii=False))
+        _urlcheck_failures += 1
+        if _urlcheck_failures >= _URLCHECK_FAIL_LIMIT:
+            _urlcheck_failures = 0
+            _urlcheck_skip_until = time.monotonic() + _URLCHECK_PAUSE_SECONDS
+            LOGGER.warning("url check paused for %.0fs after repeated failures (nothing is sent meanwhile)", _URLCHECK_PAUSE_SECONDS)
+    return duplicates, unverified
+
+
+async def _url_flush_loop(client: httpx.AsyncClient, endpoint: str, timeout: float) -> None:
     while _URL_PENDING:
-        await asyncio.sleep(_URL_WINDOW_SECONDS)
+        waited = 0.0
+        while waited < _URL_MAX_WAIT_SECONDS and sum(len(u) for u, _ in _URL_PENDING) < _URL_MIN_BATCH:
+            await asyncio.sleep(0.1)
+            waited += 0.1
         batch = _URL_PENDING[:]
         _URL_PENDING.clear()
         duplicates: set[str] = set()
+        unverified: set[str] = {u for urls, _ in batch for u in urls}  # pessimistic until proven otherwise
         try:
             unique = list(dict.fromkeys(u for urls, _ in batch for u in urls))
-            duplicates = await _query_url_check(client, endpoint, unique, timeout, chunk)
+            duplicates, unverified = await _query_url_check(client, endpoint, unique, timeout)
         except Exception:
-            LOGGER.exception("url dedup flush failed, sending without it")
+            LOGGER.exception("url check flush failed, nothing from this batch is sent")
         finally:
-            # Callers are never left waiting: unresolved ones get their share (fail open).
             for urls, fut in batch:
                 if not fut.done():
-                    fut.set_result({u for u in urls if u in duplicates})
+                    fut.set_result(({u for u in urls if u in duplicates}, {u for u in urls if u in unverified}))
 
 
 async def check_url_duplicates(
-    client: httpx.AsyncClient, endpoint: str, urls: list[str], timeout: float = 10.0, chunk: int = 500
-) -> set[str]:
-    """Queue `urls` for the shared batched url-check; returns those Exorde already has (fail open)."""
+    client: httpx.AsyncClient, endpoint: str, urls: list[str], timeout: float = 10.0
+) -> tuple[set[str], set[str]]:
+    """Queue `urls` for the shared batched check. Returns (known_duplicates, unverified)."""
     global _URL_FLUSHER
-    if not urls or time.monotonic() < _urlcheck_skip_until:
-        return set()
+    if not urls:
+        return set(), set()
+    if time.monotonic() < _urlcheck_skip_until:
+        return set(), set(urls)
     loop = asyncio.get_running_loop()
     fut: asyncio.Future = loop.create_future()
     _URL_PENDING.append((urls, fut))
     if _URL_FLUSHER is None or _URL_FLUSHER.done():
-        _URL_FLUSHER = loop.create_task(_url_flush_loop(_URL_CLIENT or client, endpoint, timeout, chunk))
+        _URL_FLUSHER = loop.create_task(_url_flush_loop(client, endpoint, timeout))
     return await fut
 
 

@@ -236,3 +236,26 @@ class ThreadsHttpClient:
                         collected[reply.external_id] = reply
         return "ok", list(collected.values()), reply_pages
 
+
+def make_url_check_poster(pool: ProxyPool, impersonate: str | None = None):
+    """POST {"urls": [...]} to the url-check API through a proxy from the pool (fresh proxy and a
+    fresh connection per request). Raises on transport errors and non-200 answers; the caller
+    retries, which picks another proxy.
+    """
+
+    async def post(endpoint: str, urls: list[str], timeout: float):
+        proxy = pool.next()
+        try:
+            async with AsyncSession(impersonate=impersonate, timeout=timeout) as session:
+                response = await session.post(
+                    endpoint, json={"urls": urls}, proxies={"http": proxy, "https": proxy}
+                )
+        except Exception:
+            pool.ban(proxy, 60.0)
+            raise
+        if response.status_code != 200:
+            pool.ban(proxy, 60.0)
+            raise RuntimeError(f"url-check via {mask_proxy(proxy)} answered HTTP {response.status_code}")
+        return response.json()
+
+    return post
