@@ -214,6 +214,22 @@ async def http_runner(
                     totals["sent"] / max(time.monotonic() - cycle_start, 0.001),
                     delta.get("requests", 0) / max(time.monotonic() - cycle_start, 0.001),
                 )
+                sent_top = totals["sent"] - totals["sent_replies"]
+                fresh_top = totals["fresh"] - totals["fresh_replies"]
+                LOGGER.info(
+                    "yield: top-level fresh=%d new=%d (%.0f%%) from ~%d profile pages = %.2f new/page | "
+                    "replies fresh=%d new=%d (%.0f%%) from %d reply pages = %.2f new/page",
+                    fresh_top,
+                    sent_top,
+                    100.0 * sent_top / max(fresh_top, 1),
+                    len(batch),
+                    sent_top / max(len(batch), 1),
+                    totals["fresh_replies"],
+                    totals["sent_replies"],
+                    100.0 * totals["sent_replies"] / max(totals["fresh_replies"], 1),
+                    totals["reply_pages"],
+                    totals["sent_replies"] / max(totals["reply_pages"], 1),
+                )
                 LOGGER.info(
                     "timing per target: fetch=%.1fs dispatch_wait=%.1fs dispatch_run=%.1fs (dispatch_concurrency=%d)",
                     timing["fetch"] / max(timing["targets"], 1),

@@ -42,6 +42,7 @@ async def dispatch_posts(
 
     # Skip URLs Exorde already has (compute-saving, fails open on errors).
     remote_duplicates = 0
+    remote_duplicates_replies = 0  # subset of remote_duplicates that are replies (yield statistics)
     url_check_endpoint = cfg.get("url_check_endpoint")
     if url_check_endpoint and claimed:
         known = await check_url_duplicates(
@@ -52,6 +53,7 @@ async def dispatch_posts(
             for post in claimed:
                 if post.url in known:
                     remote_duplicates += 1
+                    remote_duplicates_replies += bool(post.external_parent_id)
                     await seen_cache.confirm(post.external_id)  # remember: do not ask again
                 else:
                     still.append(post)
@@ -67,6 +69,7 @@ async def dispatch_posts(
         to_send.append(post)
 
     sent = 0
+    sent_replies = 0
     unconfirmed = 0
     for i in range(0, len(to_send), batch_max_items):
         chunk = to_send[i : i + batch_max_items]
@@ -77,6 +80,7 @@ async def dispatch_posts(
             if post.external_id in confirmed_ids:
                 await seen_cache.confirm(post.external_id)
                 sent += 1
+                sent_replies += bool(post.external_parent_id)
             else:
                 await seen_cache.release(post.external_id)
                 unconfirmed += 1
@@ -90,4 +94,8 @@ async def dispatch_posts(
         "duplicates": duplicates,
         "remote_duplicates": remote_duplicates,
         "rate_limited": rate_limited,
+        # Yield statistics: replies are the posts with a non-empty parent id.
+        "fresh_replies": sum(1 for p in fresh if p.external_parent_id),
+        "remote_dup_replies": remote_duplicates_replies,
+        "sent_replies": sent_replies,
     }
