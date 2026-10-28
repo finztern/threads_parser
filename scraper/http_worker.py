@@ -243,7 +243,7 @@ async def http_runner(
                 fresh_top = totals["fresh"] - totals["fresh_replies"]
                 LOGGER.info(
                     "yield: top-level fresh=%d new=%d (%.0f%%) from ~%d profile pages = %.2f new/page | "
-                    "replies fresh=%d new=%d (%.0f%%) from %d reply pages = %.2f new/page | url_unverified=%d",
+                    "replies fresh=%d new=%d (%.0f%%) from %d reply pages = %.2f new/page | url_unverified=%d too_short=%d",
                     fresh_top,
                     sent_top,
                     100.0 * sent_top / max(fresh_top, 1),
@@ -255,6 +255,7 @@ async def http_runner(
                     totals["reply_pages"],
                     totals["sent_replies"] / max(totals["reply_pages"], 1),
                     totals["url_unverified"],
+                    totals["too_short"],
                 )
                 LOGGER.info("event loop lag: max=%.2fs this cycle", loop_lag["max"])
                 loop_lag["max"] = 0.0

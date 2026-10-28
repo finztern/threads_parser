@@ -32,9 +32,17 @@ async def dispatch_posts(
         p for p in raw_posts if (now - p.created_at.astimezone(timezone.utc)).total_seconds() <= max_age_seconds
     ]
 
+    # Optional minimum text length (characters, surrounding whitespace ignored). Checked before the
+    # dedup claim and the url check, so short posts cost nothing. 0 = off.
+    min_text_length = int(cfg.get("min_text_length", 0))
+    candidates = fresh
+    if min_text_length > 0:
+        candidates = [p for p in fresh if len((p.content or "").strip()) >= min_text_length]
+    too_short = len(fresh) - len(candidates)
+
     claimed: list[RawThreadsPost] = []
     duplicates = 0
-    for post in fresh:
+    for post in candidates:
         if await seen_cache.try_claim(post.external_id):
             claimed.append(post)
         else:
@@ -98,6 +106,7 @@ async def dispatch_posts(
         "duplicates": duplicates,
         "remote_duplicates": remote_duplicates,
         "rate_limited": rate_limited,
+        "too_short": too_short,
         # Yield statistics: replies are the posts with a non-empty parent id.
         "fresh_replies": sum(1 for p in fresh if p.external_parent_id),
         "remote_dup_replies": remote_duplicates_replies,
