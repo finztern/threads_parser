@@ -143,6 +143,7 @@ async def http_runner(
                 )
                 fetch_replies = cfg.get("fetch_replies", True)
                 reply_max_age = cfg.get("reply_post_max_age_seconds", 7 * 86400)
+                reply_min_growth = max(1, int(cfg.get("reply_min_growth", 1)))
                 totals: Counter[str] = Counter()
                 stats_before = Counter(client.stats)
                 client.error_kinds.clear()
@@ -159,7 +160,7 @@ async def http_runner(
                         try:
                             t_fetch = time.monotonic()
                             label, posts, reply_pages = await client.fetch_target(
-                                username, tracker, reply_max_age, fetch_replies
+                                username, tracker, reply_max_age, fetch_replies, reply_min_growth
                             )
                             timing["fetch"] += time.monotonic() - t_fetch
                             timing["targets"] += 1

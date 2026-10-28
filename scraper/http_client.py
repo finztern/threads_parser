@@ -36,8 +36,12 @@ class ReplyTracker:
         self._max = max_size
         self._counts: OrderedDict[str, int] = OrderedDict()
 
-    def needs_fetch(self, post_id: str, reply_count: int) -> bool:
-        return reply_count > 0 and self._counts.get(post_id, -1) < reply_count
+    def needs_fetch(self, post_id: str, reply_count: int, min_growth: int = 1) -> bool:
+        """Open the post page only when at least `min_growth` replies appeared since the last time
+        we fetched it (never fetched = all its replies are new). Several new replies per request
+        instead of one; the growth keeps accumulating until the threshold is reached.
+        """
+        return reply_count > 0 and reply_count - self._counts.get(post_id, 0) >= max(1, min_growth)
 
     def mark(self, post_id: str, reply_count: int) -> None:
         self._counts[post_id] = reply_count
@@ -197,6 +201,7 @@ class ThreadsHttpClient:
         tracker: ReplyTracker,
         reply_post_max_age_seconds: float,
         fetch_replies: bool = True,
+        reply_min_growth: int = 1,
     ) -> tuple[str, list[RawThreadsPost], int]:
         """Profile posts + (where it makes sense) their direct replies.
 
@@ -214,7 +219,7 @@ class ThreadsHttpClient:
             for post in posts:
                 count = int((post.extra or {}).get("direct_reply_count") or 0)
                 age = (now - post.created_at.astimezone(timezone.utc)).total_seconds()
-                if age > reply_post_max_age_seconds or not tracker.needs_fetch(post.external_id, count):
+                if age > reply_post_max_age_seconds or not tracker.needs_fetch(post.external_id, count, reply_min_growth):
                     continue
                 eligible.append((post, count))
 
