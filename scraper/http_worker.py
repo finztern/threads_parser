@@ -99,6 +99,7 @@ async def http_runner(
     # url-check goes through the proxy pool (fresh proxy + connection per request).
     set_url_check_poster(make_url_check_poster(pool) if cfg.get("url_check_via_proxy", True) else None)
     loop_lag = {"max": 0.0}
+    tune: dict = {"conc": None, "cfg_conc": None, "prev_conc": None, "prev_rps": 0.0, "hold": 0}
     lag_task = asyncio.create_task(_lag_monitor(loop_lag))
     async with httpx.AsyncClient(transport=store_transport) as store_client:
         try:
@@ -124,7 +125,11 @@ async def http_runner(
                 # http_concurrency limits HTTP requests (inside the client); targets in flight
                 # get a little headroom so request slots stay busy between a target's two fetch rounds.
                 # No requests are in flight between cycles, so the limit can be swapped safely.
-                concurrency = max(1, int(cfg.get("http_concurrency", 30)))
+                cfg_conc = max(1, int(cfg.get("http_concurrency", 30)))
+                autotune = bool(cfg.get("autotune", True))
+                if tune["conc"] is None or tune["cfg_conc"] != cfg_conc:  # first cycle, or edited in config.yaml
+                    tune.update(conc=cfg_conc, cfg_conc=cfg_conc, prev_conc=None, hold=0)
+                concurrency = tune["conc"] if autotune else cfg_conc
                 client.set_concurrency(concurrency)
                 target_slots = max(concurrency, int(concurrency * float(cfg.get("target_concurrency_factor", 1.5))))
                 sem = asyncio.Semaphore(target_slots)
@@ -260,6 +265,18 @@ async def http_runner(
                     timing["dispatch_run"] / max(timing["dispatches"], 1),
                     int(cfg.get("dispatch_concurrency", 64)),
                 )
+                if autotune:
+                    cycle_seconds = max(time.monotonic() - cycle_start, 0.001)
+                    message = _autotune(
+                        tune,
+                        lo=int(cfg.get("http_concurrency_min", 30)),
+                        hi=int(cfg.get("http_concurrency_max", 110)),
+                        rps=delta.get("requests", 0) / cycle_seconds,
+                        block_ratio=delta.get("blocked", 0) / max(delta.get("requests", 0), 1),
+                        ok_ratio=pool.available() / max(len(pool), 1),
+                    )
+                    if message:
+                        LOGGER.info("autotune: %s", message)
                 if client.error_kinds:
                     LOGGER.info(
                         "transport errors by kind: %s",
@@ -277,6 +294,32 @@ async def http_runner(
             client.close()
             if discovery_on:
                 registry.save(force=True)
+
+
+def _autotune(tune: dict, lo: int, hi: int, rps: float, block_ratio: float, ok_ratio: float) -> str | None:
+    """Hill-climb the request concurrency once per cycle. Mutates `tune`, returns a log message or None.
+
+    - proxies getting banned (many blocks / few healthy proxies) -> back off hard
+    - a raise that did not add >=5% req/s -> we hit a ceiling (CPU, link, provider): go back, hold
+    - healthy and not at the ceiling -> try +15%
+    """
+    conc = tune["conc"]
+    if block_ratio > 0.03 or ok_ratio < 0.80:
+        tune.update(conc=max(lo, int(conc * 0.7)), prev_conc=None, hold=6)
+        return f"backing off ({conc} -> {tune['conc']}): blocked={block_ratio:.1%} proxies_ok={ok_ratio:.0%}"
+    if tune["prev_conc"] is not None:
+        prev_conc, prev_rps = tune["prev_conc"], tune["prev_rps"]
+        tune["prev_conc"] = None
+        if rps < prev_rps * 1.05:
+            tune.update(conc=prev_conc, hold=5)
+            return f"ceiling reached: {conc} slots gave {rps:.0f} req/s vs {prev_rps:.0f} at {prev_conc}; back to {prev_conc}"
+    if tune["hold"] > 0:
+        tune["hold"] -= 1
+        return None
+    if block_ratio < 0.01 and ok_ratio > 0.92 and conc < hi:
+        tune.update(prev_conc=conc, prev_rps=rps, conc=min(hi, int(conc * 1.15) + 1))
+        return f"raising {conc} -> {tune['conc']} (blocked={block_ratio:.1%} proxies_ok={ok_ratio:.0%}, {rps:.0f} req/s)"
+    return None
 
 
 async def _lag_monitor(lag: dict[str, float]) -> None:
