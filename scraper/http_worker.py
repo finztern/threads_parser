@@ -184,7 +184,10 @@ async def http_runner(
                         async with dispatch_sem:
                             timing["dispatch_wait"] += time.monotonic() - t_wait
                             t_run = time.monotonic()
-                            totals.update(await dispatch_posts(posts, cfg, store_client, token_bucket, seen_cache))
+                            result = await dispatch_posts(posts, cfg, store_client, token_bucket, seen_cache)
+                            totals.update(result)
+                            # Items new to Exorde (rate-limited ones were new too) = this target's yield.
+                            registry.report_yield(username, result["to_send"] + result["rate_limited"])
                             timing["dispatch_run"] += time.monotonic() - t_run
                             timing["dispatches"] += 1
                     except Exception:

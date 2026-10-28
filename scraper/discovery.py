@@ -6,6 +6,8 @@ discovered target. Scheduling is adaptive per target:
 
 - gave fresh own posts  -> re-check soon (min_interval)
 - gave nothing          -> pause doubles, up to max_interval
+- yield (posts that were NEW to Exorde) is tracked per target as a moving average: the most
+  productive profiles are scraped first, and a scrape that produced nothing new backs off
 - 404 / not found       -> dropped for good ("dead")
 - transient failure     -> retried shortly, interval unchanged
 
@@ -35,6 +37,7 @@ class TargetState:
     seed: bool = False
     scrapes: int = 0
     fresh_total: int = 0
+    yield_ema: float = 0.0  # moving average of items new to Exorde per scrape
 
 
 class TargetRegistry:
@@ -64,7 +67,12 @@ class TargetRegistry:
             raw = json.loads(self._file.read_text(encoding="utf-8"))
             for name, v in raw.get("targets", {}).items():
                 self._targets[name] = TargetState(
-                    interval=float(v[0]), next_due=float(v[1]), seed=False, scrapes=int(v[2]), fresh_total=int(v[3])
+                    interval=float(v[0]),
+                    next_due=float(v[1]),
+                    seed=False,
+                    scrapes=int(v[2]),
+                    fresh_total=int(v[3]),
+                    yield_ema=float(v[4]) if len(v) > 4 else 0.0,
                 )
             self._dead = set(raw.get("dead", []))
             LOGGER.info("discovery: loaded %d targets, %d dead from %s", len(self._targets), len(self._dead), self._file)
@@ -78,7 +86,7 @@ class TargetRegistry:
             return
         data = {
             "targets": {
-                n: [round(t.interval, 1), round(t.next_due, 1), t.scrapes, t.fresh_total]
+                n: [round(t.interval, 1), round(t.next_due, 1), t.scrapes, t.fresh_total, round(t.yield_ema, 2)]
                 for n, t in self._targets.items()
                 if not t.seed
             },
@@ -152,8 +160,10 @@ class TargetRegistry:
             if t.next_due > now:
                 continue
             (seeds if t.seed else proven if t.fresh_total > 0 else unproven).append((k, t))
-        for group in (seeds, proven, unproven):
+        for group in (seeds, unproven):
             group.sort(key=lambda kt: kt[1].next_due)
+        # Proven profiles: the ones that recently produced the most NEW items go first.
+        proven.sort(key=lambda kt: (-kt[1].yield_ema, kt[1].next_due))
 
         batch = [k for k, _ in seeds[:limit]]
         room = limit - len(batch)
@@ -201,11 +211,27 @@ class TargetRegistry:
         state.fresh_total += fresh_own_posts
         if state.seed:
             state.interval = self._seed_interval
-        elif fresh_own_posts > 0:
+        elif fresh_own_posts == 0:
+            state.interval = min(self._max, state.interval * 2)
+        # fresh own posts: the interval is left as it is; report_yield() sets it once we know
+        # how much of it was new to Exorde.
+        state.next_due = now + state.interval * random.uniform(0.8, 1.2)
+
+    def report_yield(self, name: str, new_items: int) -> None:
+        """Called after the dispatch of a scrape of `name` with the number of items that were NEW
+        to Exorde (passed the url check). Productive -> poll again at min_interval and rank higher;
+        nothing new -> the pause doubles, even if the author posts a lot (Exorde already has it).
+        """
+        state = self._targets.get(name.lower())
+        if state is None or state.seed:
+            return
+        state.yield_ema = 0.6 * state.yield_ema + 0.4 * new_items
+        if new_items > 0:
             state.interval = self._min
         else:
-            state.interval = min(self._max, state.interval * 2)
-        state.next_due = now + state.interval * random.uniform(0.8, 1.2)
+            state.interval = min(self._max, max(state.interval, self._min) * 2)
+        state.next_due = time.time() + state.interval * random.uniform(0.8, 1.2)
+        self._dirty = True
 
     # ---- stats ---------------------------------------------------------
     def stats(self) -> dict[str, int]:
