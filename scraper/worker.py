@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from scraper.pipeline import RawThreadsPost, build_payload, check_url_duplicates, send_batch
+from scraper.pipeline import RawThreadsPost, build_payload, check_url_duplicates, send_batched
 from scraper.state import SeenCache, TokenBucket
 
 
@@ -83,12 +83,16 @@ async def dispatch_posts(
     sent = 0
     sent_replies = 0
     unconfirmed = 0
-    for i in range(0, len(to_send), batch_max_items):
-        chunk = to_send[i : i + batch_max_items]
-        payloads = [build_payload(p) for p in chunk]
-        confirmed_ids, failed_ids = await send_batch(client, store_endpoint, payloads)
-
-        for post in chunk:
+    if to_send:
+        # Shared queue: items of many targets go out in one POST (see send_batched).
+        confirmed_ids, failed_ids = await send_batched(
+            client,
+            store_endpoint,
+            [build_payload(p) for p in to_send],
+            max_items=batch_max_items,
+            max_wait=float(cfg.get("store_max_wait_seconds", 1.0)),
+        )
+        for post in to_send:
             if post.external_id in confirmed_ids:
                 await seen_cache.confirm(post.external_id)
                 sent += 1
