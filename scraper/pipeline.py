@@ -157,14 +157,14 @@ async def _query_url_check(
     Returns (duplicates, unverified). Unverified = the check failed for them (after one retry);
     the caller must NOT send those.
     """
-    global _urlcheck_failures, _urlcheck_skip_until
     duplicates: set[str] = set()
     unverified: set[str] = set()
-    for i in range(0, len(urls), _URL_BATCH_SIZE):
-        part = urls[i : i + _URL_BATCH_SIZE]
+
+    async def check_chunk(part: list[str]) -> None:
+        global _urlcheck_failures, _urlcheck_skip_until
         if time.monotonic() < _urlcheck_skip_until:
             unverified.update(part)
-            continue
+            return
         data: Any = None
         error: BaseException | None = None
         for _attempt in range(2):  # the service sometimes never answers one request: retry (new proxy)
@@ -177,7 +177,7 @@ async def _query_url_check(
         if error is None and isinstance(data, list):
             _urlcheck_failures = 0
             duplicates.update(u for u in data if isinstance(u, str))
-            continue
+            return
         unverified.update(part)
         if error is not None:
             LOGGER.warning("url check failed (%d urls), not sending them: %s", len(part), describe_exc(error))
@@ -187,7 +187,14 @@ async def _query_url_check(
         if _urlcheck_failures >= _URLCHECK_FAIL_LIMIT:
             _urlcheck_failures = 0
             _urlcheck_skip_until = time.monotonic() + _URLCHECK_PAUSE_SECONDS
-            LOGGER.warning("url check paused for %.0fs after repeated failures (nothing is sent meanwhile)", _URLCHECK_PAUSE_SECONDS)
+            LOGGER.warning(
+                "url check paused for %.0fs after repeated failures (nothing is sent meanwhile)",
+                _URLCHECK_PAUSE_SECONDS,
+            )
+
+    # Chunks of one flush go out in parallel (each through its own proxy): one slow proxy
+    # must not hold back the whole queue.
+    await asyncio.gather(*(check_chunk(urls[i : i + _URL_BATCH_SIZE]) for i in range(0, len(urls), _URL_BATCH_SIZE)))
     return duplicates, unverified
 
 
