@@ -2,9 +2,12 @@
 
 Accepted line formats (one proxy per line, '#' comments and blanks ignored):
     http://user:pass@host:port
+    socks4://host:port
+    socks5://host:port
     socks5://user:pass@host:port
     user:pass@host:port          (treated as http://)
     host:port:user:pass          (treated as http://)
+    host:port                    (treated as http://, without authentication)
 
 The file itself is a secret: keep it out of git (see .gitignore).
 """
@@ -26,6 +29,8 @@ def normalize_proxy(line: str) -> str | None:
     if "@" in line:
         return "http://" + line
     parts = line.split(":")
+    if len(parts) == 2:
+        return f"http://{line}"
     if len(parts) == 4:
         host, port, user, password = parts
         return f"http://{user}:{password}@{host}:{port}"
