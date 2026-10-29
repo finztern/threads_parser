@@ -61,8 +61,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be greater than zero")
-    if not 1 <= args.workers <= 32:
-        parser.error("--workers must be between 1 and 32")
+    if not 1 <= args.workers <= 5000:
+        parser.error("--workers must be between 1 and 5000")
     if args.url:
         try:
             parsed_url = urlsplit(args.url)
