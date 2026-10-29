@@ -4,5 +4,8 @@ __pycache__/
 *.pyc
 .venv/
 proxies.txt
+proxies.working.txt
+/proxy-results/*
+!/proxy-results/.gitkeep
 targets.txt
 data/

@@ -1,5 +1,6 @@
 # ONE container, no browser, no accounts, no VPN.
 #   cp proxies.txt.example proxies.txt   # your proxies, one per line
+#   python3 scripts/test_proxies.py --url "https://your-host/health"
 #   docker compose up -d --build parser
 # The store_items collector stays on the host, reached via host.docker.internal.
 
@@ -13,6 +14,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./proxies.txt:/app/proxies.txt:ro
+      - ./proxy-results:/proxy-results:ro
       - ./targets.txt:/app/targets.txt:ro
       - ./config.yaml:/app/config.yaml
       - ./debug:/app/debug
