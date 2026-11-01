@@ -175,6 +175,7 @@ class ThreadsHttpClient:
                 last = "failed"
                 continue
 
+            self._pool.ok(proxy)
             items = await self._parse(parse, response.text, arg)
             if items:
                 return "ok", items

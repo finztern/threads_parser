@@ -98,3 +98,10 @@ class ProxyPool:
     def available(self) -> int:
         now = time.monotonic()
         return sum(1 for p in self._proxies if self._banned_until.get(p, 0.0) <= now)
+
+    # A rotating pool (Tor) gets a fresh exit IP per request, so a blocked answer says nothing
+    # about the next one; the autotune must not back off because of it.
+    rotating = False
+
+    def ok(self, proxy: str) -> None:
+        """A request through `proxy` returned a good page (used by pools that track health)."""

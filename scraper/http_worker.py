@@ -6,6 +6,7 @@ TokenBucket, batch POST to store_items).
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import time
 from collections import Counter
@@ -19,6 +20,8 @@ from scraper.constants import BASE_DIR, LOGGER
 from scraper.discovery import TargetRegistry
 from scraper.http_client import ReplyTracker, ThreadsHttpClient, make_url_check_poster
 from scraper.proxies import ProxyPool
+from scraper.tor_pool import TorPool
+from scraper.vpn import VpnPool, load_nodes, make_vpn_probe, make_vpn_url_check_poster
 from scraper.state import SeenCache, TokenBucket
 from scraper.pipeline import configure_url_check, set_url_check_poster
 from scraper.worker import dispatch_posts
@@ -57,20 +60,33 @@ async def http_runner(
     stop_event: asyncio.Event,
 ) -> None:
     cfg = config_store.get()
+    tor_instances = int(os.getenv("TOR_INSTANCES", "0") or 0)
     try:
-        pool = ProxyPool.from_file(
-            _resolve(cfg.get("proxies_file", "proxies.txt")),
-            cooldown_seconds=cfg.get("proxy_cooldown_seconds", 120),
-        )
+        if tor_instances > 0:
+            # Tor mode: proxies.txt is not used; every request gets its own circuit (see tor_pool.py).
+            pool = TorPool(os.getenv("TOR_HOST", "tor"), int(os.getenv("TOR_BASE_PORT", "9050")), tor_instances)
+        else:
+            pool = ProxyPool.from_file(
+                _resolve(cfg.get("proxies_file", "proxies.txt")),
+                cooldown_seconds=cfg.get("proxy_cooldown_seconds", 120),
+            )
     except (FileNotFoundError, ValueError) as exc:
         LOGGER.error("cannot start http mode: %s", exc)
         return
 
-    LOGGER.info("http mode: %d proxies in pool", len(pool))
+    if tor_instances > 0:
+        LOGGER.info("http mode: Tor, %d instances (new circuit per request)", len(pool))
+        # Tor is slower than a proxy and many exits are blocked: longer timeout, more retries.
+        http_timeout = max(float(cfg.get("http_timeout_seconds", 15)), float(cfg.get("tor_http_timeout_seconds", 30)))
+        http_attempts = max(int(cfg.get("http_attempts", 3)), int(cfg.get("tor_http_attempts", 5)))
+    else:
+        LOGGER.info("http mode: %d proxies in pool", len(pool))
+        http_timeout = cfg.get("http_timeout_seconds", 15)
+        http_attempts = cfg.get("http_attempts", 3)
     client = ThreadsHttpClient(
         pool,
-        timeout=cfg.get("http_timeout_seconds", 15),
-        attempts=cfg.get("http_attempts", 3),
+        timeout=http_timeout,
+        attempts=http_attempts,
         parse_workers=cfg.get("parse_workers"),
         error_cooldown=cfg.get("proxy_error_cooldown_seconds", 600),
         concurrency=int(cfg.get("http_concurrency", 30)),
@@ -96,8 +112,13 @@ async def http_runner(
         retries=2,
         limits=httpx.Limits(max_connections=128, max_keepalive_connections=128, keepalive_expiry=10.0),
     )
-    # url-check goes through the proxy pool (fresh proxy + connection per request).
-    set_url_check_poster(make_url_check_poster(pool) if cfg.get("url_check_via_proxy", True) else None)
+    # url-check: VPN nodes from vpn_nodes.txt (fastest healthy one, automatic replacement) when the file
+    # has nodes; otherwise through the proxy pool (fresh proxy + connection per request).
+    vpn = await _start_vpn(cfg)
+    if vpn is not None:
+        set_url_check_poster(make_vpn_url_check_poster(vpn))
+    else:
+        set_url_check_poster(make_url_check_poster(pool) if cfg.get("url_check_via_proxy", True) else None)
     loop_lag = {"max": 0.0}
     tune: dict = {"conc": None, "cfg_conc": None, "prev_conc": None, "prev_rps": 0.0, "hold": 0}
     lag_task = asyncio.create_task(_lag_monitor(loop_lag))
@@ -274,7 +295,7 @@ async def http_runner(
                         lo=int(cfg.get("http_concurrency_min", 30)),
                         hi=int(cfg.get("http_concurrency_max", 110)),
                         rps=delta.get("requests", 0) / cycle_seconds,
-                        block_ratio=delta.get("blocked", 0) / max(delta.get("requests", 0), 1),
+                        block_ratio=0.0 if pool.rotating else delta.get("blocked", 0) / max(delta.get("requests", 0), 1),
                         ok_ratio=pool.available() / max(len(pool), 1),
                     )
                     if message:
@@ -293,9 +314,33 @@ async def http_runner(
         finally:
             lag_task.cancel()
             set_url_check_poster(None)
+            if vpn is not None:
+                await vpn.close()
             client.close()
             if discovery_on:
                 registry.save(force=True)
+
+
+async def _start_vpn(cfg: dict) -> VpnPool | None:
+    """Start Xray for the nodes in vpn_nodes.txt. None = no nodes / not usable (caller falls back)."""
+    nodes = load_nodes(_resolve(cfg.get("vpn_nodes_file", "vpn/nodes.txt")))
+    endpoint = cfg.get("url_check_endpoint")
+    if not nodes or not endpoint:
+        return None
+    vpn = VpnPool(
+        nodes,
+        base_port=int(cfg.get("vpn_base_port", 10800)),
+        probe=make_vpn_probe(endpoint, float(cfg.get("vpn_probe_timeout_seconds", 8))),
+        rebench_seconds=float(cfg.get("vpn_rebench_seconds", 600)),
+    )
+    try:
+        await vpn.start()
+        vpn.acquire()  # at least one node must answer the url-check
+    except Exception as exc:
+        LOGGER.error("vpn for url-check unavailable (%s), falling back to the proxy pool", exc)
+        await vpn.close()
+        return None
+    return vpn
 
 
 def _autotune(tune: dict, lo: int, hi: int, rps: float, block_ratio: float, ok_ratio: float) -> str | None:

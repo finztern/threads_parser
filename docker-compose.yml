@@ -1,4 +1,6 @@
-# ONE container, no browser, no accounts, no VPN.
+# Parser: no browser, no accounts. Proxies come from proxies.txt, or from the `tor` service (profile
+# `tor`: set TOR_INSTANCES=20 and COMPOSE_PROFILES=tor in .env). url-check can go through the VPN
+# nodes in vpn/nodes.txt (Xray runs inside the parser container).
 #   cp proxies.txt.example proxies.txt   # your proxies, one per line
 #   python3 scripts/test_proxies.py --url "https://your-host/health"
 #   docker compose up -d --build parser
@@ -15,6 +17,7 @@ services:
     volumes:
       - ./proxies.txt:/app/proxies.txt:ro
       - ./proxy-results:/proxy-results:ro
+      - ./vpn:/app/vpn:ro
       - ./targets.txt:/app/targets.txt:ro
       - ./config.yaml:/app/config.yaml
       - ./debug:/app/debug
@@ -33,4 +36,24 @@ services:
       options:
         max-size: "20m"
         max-file: "3"
+    restart: unless-stopped
+
+  # Many Tor clients; the parser takes a fresh circuit for every request (scraper/tor_pool.py).
+  # Not started by default: enable with COMPOSE_PROFILES=tor (and TOR_INSTANCES>0) in .env.
+  tor:
+    profiles: ["tor"]
+    build: ./tor
+    environment:
+      TOR_INSTANCES: ${TOR_INSTANCES:-20}
+      TOR_BASE_PORT: ${TOR_BASE_PORT:-9050}
+      TOR_EXIT_NODES: ${TOR_EXIT_NODES:-}
+    volumes:
+      - ./data/tor:/var/lib/tor
+    cpus: ${TOR_CPUS:-2.0}
+    cpu_shares: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
     restart: unless-stopped

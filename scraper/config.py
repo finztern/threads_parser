@@ -6,10 +6,28 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
 from scraper.constants import DEFAULT_STORE_ENDPOINT, DOMAIN, LOGGER
+
+
+def normalize_store_endpoints(value: str) -> str:
+    """"192.168.0.101:9000" -> "http://192.168.0.101:9000/store_items"; several collectors may be
+    separated by commas (batches are then spread over them, see pipeline.send_batch).
+    """
+    result: list[str] = []
+    for part in str(value).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "://" not in part:
+            part = "http://" + part
+        if urlsplit(part).path in ("", "/"):
+            part = part.rstrip("/") + "/store_items"
+        result.append(part)
+    return ",".join(dict.fromkeys(result))
 
 
 class ConfigStore:
@@ -31,7 +49,7 @@ class ConfigStore:
         raw.setdefault("store_endpoint", DEFAULT_STORE_ENDPOINT)
         raw.setdefault("domain", DOMAIN)
         # Env override for store_endpoint, useful in docker-compose.
-        raw["store_endpoint"] = os.getenv("STORE_ENDPOINT", raw["store_endpoint"])
+        raw["store_endpoint"] = normalize_store_endpoints(os.getenv("STORE_ENDPOINT", raw["store_endpoint"]))
         with self._lock:
             self._data = raw
             self._mtime = self._path.stat().st_mtime

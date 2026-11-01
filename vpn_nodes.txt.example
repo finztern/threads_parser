@@ -1,0 +1,6 @@
+# One vless:// link per line (copy this file to vpn/nodes.txt). '#' lines are ignored.
+# Used only for the url-check requests: the fastest healthy node is chosen at start and re-checked
+# every 10 minutes; a failing node is replaced by the next fastest at once.
+# Supported: security=tls|reality|none, type=tcp|ws|httpupgrade|grpc|h2|splithttp|xhttp.
+# The links contain your user id - never commit vpn/nodes.txt.
+vless://00000000-0000-0000-0000-000000000000@example.com:443?security=tls&type=httpupgrade&path=%2Fpath%2F&host=example.com&sni=example.com&fp=chrome#node-1

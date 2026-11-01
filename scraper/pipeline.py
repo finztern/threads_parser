@@ -4,6 +4,7 @@ send_batch: POST a batch of items to STORE_ENDPOINT (/store_items).
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import os
 import time
@@ -109,6 +110,7 @@ async def _post_batch(
 # Max simultaneous POSTs to the collector. A burst of ~100 parallel connects can overflow the accept
 # queue of a simple single-process collector, which then answers with "connection refused".
 _STORE_SEM = asyncio.Semaphore(max(1, int(os.getenv("STORE_CONCURRENCY", "12"))))
+_ENDPOINT_RR = itertools.count()  # round-robin start index over several store endpoints
 
 # --- url-check ---------------------------------------------------------------------------------
 # Exorde's URL dedup API is queried in batches by ONE sender task (all targets queue their URLs),
@@ -255,14 +257,20 @@ async def send_batch(
 
     response: httpx.Response | None = None
     last_exc: BaseException | None = None
+    # `store_endpoint` may list several collectors separated by commas: batches go round-robin and a
+    # collector that cannot be reached is skipped for this batch.
+    endpoints = [e for e in store_endpoint.split(",") if e.strip()] or [store_endpoint]
+    first = next(_ENDPOINT_RR)
     # A refused/failed CONNECT means the request never reached the collector, so repeating it cannot
     # duplicate items. This rides out short collector gaps (restart, full accept queue).
-    for delay in (0.0, 1.0, 2.0, 4.0):
-        if delay:
-            await asyncio.sleep(delay)
+    for attempt in range(len(endpoints) + 3):
+        extra = attempt - len(endpoints)  # all collectors tried once: back off 1 s, 2 s, 4 s
+        if extra >= 0:
+            await asyncio.sleep(2.0**extra)
+        endpoint = endpoints[(first + attempt) % len(endpoints)].strip()
         try:
             async with _STORE_SEM:
-                response = await _post_batch(client, store_endpoint, items)
+                response = await _post_batch(client, endpoint, items)
             break
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             last_exc = exc

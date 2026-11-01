@@ -9,3 +9,5 @@ proxies.working.txt
 !/proxy-results/.gitkeep
 targets.txt
 data/
+vpn/*
+!vpn/.gitkeep
