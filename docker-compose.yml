@@ -12,6 +12,7 @@ services:
     env_file: .env
     environment:
       STORE_ENDPOINT: ${STORE_ENDPOINT:-http://host.docker.internal:9000/store_items}
+      TOR_HOST: ${TOR_HOST:-host.docker.internal}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -43,6 +44,10 @@ services:
   tor:
     profiles: ["tor"]
     build: ./tor
+    # Host network: Tor reaches relays exactly like a Tor installed on the host (a bridged container
+    # often cannot, e.g. "No route to host"). The SOCKS ports bind on the host; only docker/local
+    # addresses are allowed by SocksPolicy. Stop a host Tor that uses the same ports first.
+    network_mode: host
     environment:
       TOR_INSTANCES: ${TOR_INSTANCES:-20}
       TOR_BASE_PORT: ${TOR_BASE_PORT:-9050}

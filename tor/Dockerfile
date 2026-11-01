@@ -7,5 +7,5 @@ RUN apt-get update \
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# No ports are published: only the other containers of the compose network can reach the SOCKS ports.
+# Runs with network_mode: host (see docker-compose.yml); SocksPolicy limits clients to local/docker addresses.
 ENTRYPOINT ["/entrypoint.sh"]
