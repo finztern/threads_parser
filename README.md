@@ -87,7 +87,7 @@ python3 scripts/test_proxies.py --url "https://your-host/health"
 адреса и не режет ли подсеть целиком); 2) `sudo bash scripts/ipv6_anyip.sh 2a01:ecc0:6000:1b6` (маршрут
 `local` на `lo` и `ip_nonlocal_bind`, переживает перезагрузку; если провайдер отвечает на NDP по каждому адресу,
 нужен ещё `ndppd` со `static`-правилом на подсеть); 3) в `.env`: `IPV6_PREFIX=<первые 4 группы>` (можно несколько
-через запятую) и `STORE_ENDPOINT=http://127.0.0.1:9000/store_items`; 4) запуск
+через запятую); адрес коллектора в этом режиме `IPV6_STORE_ENDPOINT` (по умолчанию `http://127.0.0.1:9000/store_items`), обычный `STORE_ENDPOINT` не трогается; 4) запуск
 `docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d --build parser`. Парсер работает в сети хоста
 (нужно, чтобы привязываться к адресам), url-check в этом режиме всегда идёт напрямую.
 
