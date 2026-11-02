@@ -133,8 +133,10 @@ class HotPosts:
     def due(self, limit: int, now: float | None = None) -> list[tuple[str, str, str]]:
         """(username, code, pk) of the posts to open now, best expected yield first."""
         now = time.time() if now is None else now
+        # Never opened: rank by the prior (reply count x freshness). Opened before: by the measured
+        # gain, or by the replies a profile fetch saw pile up since, whichever is bigger.
         eligible = [
-            (max(p.gain, 0.5 * (p.seen - p.fetched)), pk, p)
+            (p.gain if p.fetched == 0 else max(p.gain, 0.5 * (p.seen - p.fetched)), pk, p)
             for pk, p in self._posts.items()
             if p.next_due <= now and p.seen - p.fetched >= 0
         ]
@@ -164,7 +166,7 @@ class HotPosts:
             if p.misses == 0 and p.gain >= 1.5:
                 interval = self._base / p.gain
             else:
-                interval = self._base * 2 ** (p.misses + 1)
+                interval = self._base * 4 * 2**p.misses  # 20 min, then 40, 80, ... (capped by max_interval)
             p.next_due = now + min(self._max, max(self._min, interval))
         self._dirty = True
 
