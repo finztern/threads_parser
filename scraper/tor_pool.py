@@ -21,14 +21,22 @@ class TorPool:
     rotating = True
 
     def __init__(self, host: str, base_port: int, instances: int) -> None:
-        """`host` may list several machines, comma separated; each runs `instances` Tor clients on
-        base_port .. base_port+instances-1."""
+        """`host` may list several machines, comma separated, each optionally with its own instance
+        count: "host.docker.internal=20,1.2.3.4=70" (without "=N" the default `instances` is used).
+        Machine k runs Tor clients on base_port .. base_port+count-1."""
         if instances < 1:
             raise ValueError("tor instances must be >= 1")
-        hosts = [h.strip() for h in host.split(",") if h.strip()]
-        if not hosts:
-            raise ValueError("tor host is empty")
-        self._endpoints = [f"{h}:{base_port + i}" for i in range(instances) for h in hosts]
+        counts: dict[str, int] = {}
+        for item in host.split(","):
+            name, _, count = item.strip().partition("=")
+            if name:
+                counts[name] = int(count) if count else instances
+        if not counts or min(counts.values()) < 1:
+            raise ValueError("tor host list is empty or has a zero instance count")
+        # Interleave the machines so consecutive requests alternate between them.
+        self._endpoints = [
+            f"{name}:{base_port + i}" for i in range(max(counts.values())) for name, n in counts.items() if i < n
+        ]
         self._idx = 0
         self._streak: dict[str, int] = {}
         self._banned_until: dict[str, float] = {}
