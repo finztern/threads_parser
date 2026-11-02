@@ -253,6 +253,7 @@ async def http_runner(
                             return
                     totals["reply_pages"] += 1
                     totals["hot_pages"] += 1
+                    first = hot.is_first_fetch(pk)
                     if label == "not_found":
                         hot.drop(pk)
                         return
@@ -274,6 +275,9 @@ async def http_runner(
                             LOGGER.exception("dispatch for hot post %s failed", code)
                             return
                     totals["hot_new"] += new
+                    kind = "first" if first else "again"
+                    totals[f"hot_{kind}_pages"] += 1
+                    totals[f"hot_{kind}_new"] += new
                     hot.report(pk, new)
 
                 # Hot posts go first: the request semaphore serves them before the profile fetches.
@@ -344,11 +348,16 @@ async def http_runner(
                 )
                 if hot is not None:
                     LOGGER.info(
-                        "hot posts: pages=%d new=%d (%.2f new/page) failed=%d | tracked=%d due_now=%d",
+                        "hot posts: pages=%d new=%d (%.2f new/page) failed=%d | first opens=%d -> %.2f new/page, "
+                        "repeat opens=%d -> %.2f new/page | tracked=%d due_now=%d",
                         totals["hot_pages"],
                         totals["hot_new"],
                         totals["hot_new"] / max(totals["hot_pages"], 1),
                         totals["hot_failed"],
+                        totals["hot_first_pages"],
+                        totals["hot_first_new"] / max(totals["hot_first_pages"], 1),
+                        totals["hot_again_pages"],
+                        totals["hot_again_new"] / max(totals["hot_again_pages"], 1),
                         len(hot),
                         hot.count_due(),
                     )

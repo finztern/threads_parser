@@ -160,6 +160,11 @@ class HotPosts:
             p.next_due = now + min(self._max, max(self._min, interval))
         self._dirty = True
 
+    def is_first_fetch(self, pk: str) -> bool:
+        """True while the post page has never been opened (statistics only)."""
+        p = self._posts.get(pk)
+        return p is not None and p.fetched == 0
+
     def retry_later(self, pk: str, seconds: float = 60.0, now: float | None = None) -> None:
         """The fetch itself failed (proxy / transport): try again soon, without penalizing the post."""
         p = self._posts.get(pk)
