@@ -58,8 +58,15 @@ def build_payload(post: RawThreadsPost) -> dict[str, Any]:
         **post.extra,
     }
 
+    # Exorde rule: every outgoing link (link preview, shortened/linked text) must be present in the
+    # content. Links that are not already written in the text are appended as " --<url>".
+    content = post.content
+    for link in post.extra.get("links") or []:
+        if link not in content:
+            content += f" --{link}"
+
     return {
-        "content": post.content,
+        "content": content,
         "external_id": post.external_id,
         "created_at": created_at_iso,
         "url": post.url,

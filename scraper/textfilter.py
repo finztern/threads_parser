@@ -26,7 +26,8 @@ def plain_length(text: str) -> int:
 def skip_reason(post: RawThreadsPost, min_len: int, text_only: bool = True) -> str:
     """"" = send it, "non_text" = has a link/image/video, "too_short" = not enough plain characters."""
     content = post.content or ""
-    if text_only and ((post.extra or {}).get("has_media") or _URL_RE.search(content)):
+    extra = post.extra or {}
+    if text_only and (extra.get("has_media") or extra.get("links") or _URL_RE.search(content)):
         return "non_text"
     if min_len > 0 and plain_length(content) < min_len:
         return "too_short"

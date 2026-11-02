@@ -10,11 +10,37 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from scraper.pipeline import RawThreadsPost
 
 # Real site host (NOT the same as the Exorde schema's fixed "domain": "threads.net").
 THREADS_BASE_URL = "https://www.threads.com"
+
+
+def _unwrap_link(url: str) -> str:
+    """Threads wraps outgoing links as https://l.threads.com/?u=<real url>: return the real one."""
+    parts = urlsplit(url)
+    if parts.hostname and parts.hostname.startswith("l.") and "u" in parse_qs(parts.query):
+        return parse_qs(parts.query)["u"][0]
+    return url
+
+
+def _external_links(tpai: dict[str, Any]) -> list[str]:
+    """Outgoing links of a post: link preview attachment and linked text fragments (deduped)."""
+    found: list[str] = []
+    attachment = tpai.get("link_preview_attachment")
+    if isinstance(attachment, dict) and isinstance(attachment.get("url"), str):
+        found.append(attachment["url"])
+    for fragment in ((tpai.get("text_fragments") or {}).get("fragments")) or []:
+        if not isinstance(fragment, dict):
+            continue
+        link = fragment.get("link_fragment")
+        if isinstance(link, dict):
+            found.extend(v for v in (link.get("uri"), link.get("url")) if isinstance(v, str))
+        if isinstance(fragment.get("linkified_web_url"), str):
+            found.append(fragment["linkified_web_url"])
+    return list(dict.fromkeys(_unwrap_link(u) for u in found if u))
 
 
 def _parse_post_node(node: dict[str, Any], external_parent_id: str) -> RawThreadsPost | None:
@@ -57,6 +83,7 @@ def _parse_post_node(node: dict[str, Any], external_parent_id: str) -> RawThread
             "direct_reply_count": tpai.get("direct_reply_count"),
             "is_reply": tpai.get("is_reply", bool(external_parent_id)),
             "has_media": has_media,
+            "links": _external_links(tpai),
         },
     )
 
