@@ -112,8 +112,13 @@ class HotPosts:
             known = self._posts.get(post.external_id)
             if known is None:
                 code = post.url.rsplit("/post/", 1)[-1]
-                # Optimistic prior until the first real fetch: a post with many replies is promising.
-                self._posts[post.external_id] = _Post(post.username, code, created, count, 0, min(count, 10) * 0.3, 0, now)
+                # Optimistic prior until the first real fetch: a post with many replies is promising,
+                # and a very fresh one is more likely not yet known to Exorde.
+                age = now - created
+                freshness = 2.0 if age < 1800 else 1.0 if age < 7200 else 0.5
+                self._posts[post.external_id] = _Post(
+                    post.username, code, created, count, 0, min(count, 10) * 0.3 * freshness, 0, now
+                )
                 added += 1
                 self._dirty = True
                 continue
@@ -153,10 +158,13 @@ class HotPosts:
         if p.misses >= self._max_misses:
             del self._posts[pk]
         else:
-            if p.misses == 0:
-                interval = self._base / max(p.gain, 0.5)
+            # Measured: re-opening a post whose page looks the same gives ~0.1 new replies. Only a post
+            # that really keeps paying (gain >= 1.5) is re-opened on a timer; any other one waits long
+            # and is re-opened earlier only when a profile fetch shows >= min_growth new replies.
+            if p.misses == 0 and p.gain >= 1.5:
+                interval = self._base / p.gain
             else:
-                interval = self._base * 2 ** p.misses
+                interval = self._base * 2 ** (p.misses + 1)
             p.next_due = now + min(self._max, max(self._min, interval))
         self._dirty = True
 
