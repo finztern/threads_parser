@@ -18,6 +18,7 @@ import httpx
 from scraper.config import ConfigStore
 from scraper.constants import BASE_DIR, LOGGER
 from scraper.discovery import TargetRegistry
+from scraper.hotposts import HotPosts
 from scraper.http_client import ReplyTracker, ThreadsHttpClient, make_url_check_poster
 from scraper.proxies import ProxyPool
 from scraper.tor_pool import TorPool
@@ -105,6 +106,20 @@ async def http_runner(
     if discovery_on:
         registry.load()
 
+    # Hot posts: post pages are opened by expected yield, not via the profile that lists them.
+    hot: HotPosts | None = None
+    if cfg.get("hot_posts", True):
+        hot = HotPosts(
+            _resolve(cfg.get("hot_state_file", "data/hot_posts.json")),
+            max_age=float(cfg.get("reply_post_max_age_seconds", 7 * 86400)),
+            min_growth=int(cfg.get("reply_min_growth", 4)),
+            base_interval=float(cfg.get("hot_base_interval_seconds", 300)),
+            min_interval=float(cfg.get("hot_min_interval_seconds", 90)),
+            max_misses=int(cfg.get("hot_max_misses", 5)),
+            max_posts=int(cfg.get("hot_max_posts", 100_000)),
+        )
+        hot.load()
+
     # One client for url-check and store_items. Defaults (20 keepalive connections, 5 s expiry, no
     # retries) force a new TLS handshake for most of ~100 parallel dispatches and fail under bursts.
     # retries=2 only repeats failed CONNECTs, so nothing is ever sent twice.
@@ -139,7 +154,8 @@ async def http_runner(
                 registry.sync_seeds(seeds)
 
                 batch = registry.due(max_per_cycle, float(disc.get("explore_ratio", 0.3)))
-                if not batch:
+                hot_batch = hot.due(int(cfg.get("hot_posts_per_cycle", 2000))) if hot is not None else []
+                if not batch and not hot_batch:
                     await _sleep(stop_event, min(cfg.get("poll_interval_seconds", 30), registry.seconds_until_next_due() + 0.5))
                     continue
 
@@ -180,9 +196,12 @@ async def http_runner(
                             return
                         try:
                             t_fetch = time.monotonic()
+                            # With hot posts on, reply pages are fetched by hot_job, not here.
                             label, posts, reply_pages = await client.fetch_target(
-                                username, tracker, reply_max_age, fetch_replies, reply_min_growth
+                                username, tracker, reply_max_age, fetch_replies and hot is None, reply_min_growth
                             )
+                            if hot is not None and posts:
+                                hot.observe(posts)
                             timing["fetch"] += time.monotonic() - t_fetch
                             timing["targets"] += 1
                             totals[f"profile_{label}"] += 1
@@ -221,7 +240,50 @@ async def http_runner(
                         totals["dispatch_error"] += 1
                         LOGGER.exception("dispatch for @%s failed", username)
 
-                await asyncio.gather(*(job(u) for u in batch))
+                async def hot_job(username: str, code: str, pk: str) -> None:
+                    async with sem:
+                        if stop_event.is_set():
+                            return
+                        try:
+                            label, replies = await client.fetch_post_replies(username, code, pk)
+                        except Exception:
+                            totals["hot_error"] += 1
+                            hot.retry_later(pk)
+                            LOGGER.exception("hot post %s failed", code)
+                            return
+                    totals["reply_pages"] += 1
+                    totals["hot_pages"] += 1
+                    if label == "not_found":
+                        hot.drop(pk)
+                        return
+                    if label == "failed":
+                        totals["hot_failed"] += 1
+                        hot.retry_later(pk)
+                        return
+                    new = 0
+                    if replies:
+                        try:
+                            async with dispatch_sem:
+                                result = await dispatch_posts(replies, cfg, store_client, token_bucket, seen_cache)
+                            totals.update(result)
+                            new = result["to_send"] + result["rate_limited"]
+                            registry.report_yield(username, new)
+                        except Exception:
+                            totals["dispatch_error"] += 1
+                            hot.retry_later(pk)
+                            LOGGER.exception("dispatch for hot post %s failed", code)
+                            return
+                    totals["hot_new"] += new
+                    hot.report(pk, new)
+
+                # Hot posts go first: the request semaphore serves them before the profile fetches.
+                await asyncio.gather(
+                    *(hot_job(u, c, k) for u, c, k in hot_batch),
+                    *(job(u) for u in batch),
+                )
+                if hot is not None:
+                    hot.expire()
+                    hot.save()
                 if discovery_on:
                     registry.save()
 
@@ -280,6 +342,16 @@ async def http_runner(
                     totals["too_short"],
                     totals["non_text"],
                 )
+                if hot is not None:
+                    LOGGER.info(
+                        "hot posts: pages=%d new=%d (%.2f new/page) failed=%d | tracked=%d due_now=%d",
+                        totals["hot_pages"],
+                        totals["hot_new"],
+                        totals["hot_new"] / max(totals["hot_pages"], 1),
+                        totals["hot_failed"],
+                        len(hot),
+                        hot.count_due(),
+                    )
                 LOGGER.info("event loop lag: max=%.2fs this cycle", loop_lag["max"])
                 loop_lag["max"] = 0.0
                 LOGGER.info(
@@ -320,6 +392,8 @@ async def http_runner(
             client.close()
             if discovery_on:
                 registry.save(force=True)
+            if hot is not None:
+                hot.save(force=True)
 
 
 async def _start_vpn(cfg: dict) -> VpnPool | None:

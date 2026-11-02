@@ -74,6 +74,14 @@ python3 scripts/test_proxies.py --url "https://your-host/health"
 **Несколько коллекторов.** `STORE_ENDPOINT=192.168.0.101:9000,192.168.0.102:9000` (путь `/store_items`
 добавится сам). Батчи идут по кругу, недоступный коллектор пропускается.
 
+**Горячие посты.** Профиль только показывает, какие посты есть и сколько у них ответов (`observe`), а
+страницы постов открываются отдельно, по ожидаемой отдаче (`scraper/hotposts.py`): новый пост или рост
+ответов на `reply_min_growth` и больше открывается сразу, пост, который даёт новые комментарии, опрашивается
+чаще, пустой откладывается всё дальше и после `hot_max_misses` пустых открытий забывается. Состояние
+в `data/hot_posts.json`. Настройки (все необязательные): `hot_posts` (true), `hot_posts_per_cycle` (2000),
+`hot_min_interval_seconds` (90), `hot_base_interval_seconds` (300), `hot_max_misses` (5). В логе строка
+`hot posts: pages=.. new=.. (x new/page)`. Выключить: `hot_posts: false`.
+
 ## Схема payload (Exorde)
 
 ```
