@@ -35,6 +35,14 @@ def _parse_post_node(node: dict[str, Any], external_parent_id: str) -> RawThread
         return None
 
     tpai = node.get("text_post_app_info") or {}
+    # Anything but plain text: images, videos, carousels, link previews (used by the text-only filter).
+    has_media = bool(
+        node.get("video_versions")
+        or node.get("carousel_media")
+        or (node.get("image_versions2") or {}).get("candidates")
+        or tpai.get("link_preview_attachment")
+        or node.get("media_type") in (1, 2, 8)
+    )
     return RawThreadsPost(
         external_id=str(pk),
         content=content,
@@ -48,6 +56,7 @@ def _parse_post_node(node: dict[str, Any], external_parent_id: str) -> RawThread
             "like_count": node.get("like_count"),
             "direct_reply_count": tpai.get("direct_reply_count"),
             "is_reply": tpai.get("is_reply", bool(external_parent_id)),
+            "has_media": has_media,
         },
     )
 

@@ -9,6 +9,7 @@ import httpx
 
 from scraper.pipeline import RawThreadsPost, build_payload, check_url_duplicates, send_batch
 from scraper.state import SeenCache, TokenBucket
+from scraper.textfilter import skip_reason
 
 
 async def dispatch_posts(
@@ -34,11 +35,20 @@ async def dispatch_posts(
 
     # Optional minimum text length (characters, surrounding whitespace ignored). Checked before the
     # dedup claim and the url check, so short posts cost nothing. 0 = off.
+    # text_only (default on): posts with links, images or videos are dropped, and emoji do not count
+    # towards min_text_length (see scraper/textfilter.py).
     min_text_length = int(cfg.get("min_text_length", 0))
-    candidates = fresh
-    if min_text_length > 0:
-        candidates = [p for p in fresh if len((p.content or "").strip()) >= min_text_length]
-    too_short = len(fresh) - len(candidates)
+    text_only = bool(cfg.get("text_only", True))
+    candidates = []
+    too_short = non_text = 0
+    for p in fresh:
+        reason = skip_reason(p, min_text_length, text_only)
+        if reason == "non_text":
+            non_text += 1
+        elif reason == "too_short":
+            too_short += 1
+        else:
+            candidates.append(p)
 
     claimed: list[RawThreadsPost] = []
     duplicates = 0
@@ -107,6 +117,7 @@ async def dispatch_posts(
         "remote_duplicates": remote_duplicates,
         "rate_limited": rate_limited,
         "too_short": too_short,
+        "non_text": non_text,
         # Yield statistics: replies are the posts with a non-empty parent id.
         "fresh_replies": sum(1 for p in fresh if p.external_parent_id),
         "remote_dup_replies": remote_duplicates_replies,
