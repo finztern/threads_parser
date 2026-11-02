@@ -21,9 +21,14 @@ class TorPool:
     rotating = True
 
     def __init__(self, host: str, base_port: int, instances: int) -> None:
+        """`host` may list several machines, comma separated; each runs `instances` Tor clients on
+        base_port .. base_port+instances-1."""
         if instances < 1:
             raise ValueError("tor instances must be >= 1")
-        self._endpoints = [f"{host}:{base_port + i}" for i in range(instances)]
+        hosts = [h.strip() for h in host.split(",") if h.strip()]
+        if not hosts:
+            raise ValueError("tor host is empty")
+        self._endpoints = [f"{h}:{base_port + i}" for i in range(instances) for h in hosts]
         self._idx = 0
         self._streak: dict[str, int] = {}
         self._banned_until: dict[str, float] = {}

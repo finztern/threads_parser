@@ -52,6 +52,7 @@ services:
       TOR_INSTANCES: ${TOR_INSTANCES:-20}
       TOR_BASE_PORT: ${TOR_BASE_PORT:-9050}
       TOR_EXIT_NODES: ${TOR_EXIT_NODES:-}
+      TOR_ALLOW: ${TOR_ALLOW:-}
     volumes:
       - ./data/tor:/var/lib/tor
     cpus: ${TOR_CPUS:-2.0}

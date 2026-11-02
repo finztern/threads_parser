@@ -6,6 +6,7 @@ set -u
 N="${TOR_INSTANCES:-20}"
 BASE="${TOR_BASE_PORT:-9050}"
 EXIT_NODES="${TOR_EXIT_NODES:-}"   # e.g. "{de},{nl},{se}" (empty = any exit)
+ALLOW="${TOR_ALLOW:-}"             # extra clients allowed to use the SOCKS ports: "1.2.3.4,5.6.7.8" (the parser host)
 
 mkdir -p /var/lib/tor /etc/tor/instances
 chown debian-tor:debian-tor /var/lib/tor
@@ -23,6 +24,9 @@ for ((i = 0; i < N; i++)); do
         echo "SocksPort 0.0.0.0:${port} IsolateSOCKSAuth"
         echo "SocksPolicy accept 127.0.0.1"
         echo "SocksPolicy accept 172.16.0.0/12"
+        for client in ${ALLOW//,/ }; do
+            echo "SocksPolicy accept ${client}"
+        done
         echo "SocksPolicy reject *"
         echo "ControlPort 0"
         echo "ClientOnly 1"
