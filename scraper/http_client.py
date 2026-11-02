@@ -22,7 +22,7 @@ from curl_cffi.requests import AsyncSession
 from scraper.threads_parse import THREADS_BASE_URL, _extract_ssr_feed_posts, _extract_ssr_reply_posts
 from scraper.constants import LOGGER
 from scraper.pipeline import RawThreadsPost
-from scraper.proxies import ProxyPool, mask_proxy
+from scraper.proxies import ProxyPool, mask_proxy, transport_options
 
 HEADERS = {"Accept-Language": "en-US,en;q=0.9"}
 
@@ -124,10 +124,9 @@ class ThreadsHttpClient:
                 proxy = self._pool.next()  # pick the proxy once the slot is free (fresh ban state)
                 self.stats["requests"] += 1
                 try:
-                    async with AsyncSession(impersonate=self._impersonate, timeout=self._timeout) as session:
-                        response = await session.get(
-                            url, headers=HEADERS, proxies={"http": proxy, "https": proxy}, allow_redirects=True
-                        )
+                    session_opts, request_opts = transport_options(proxy)
+                    async with AsyncSession(impersonate=self._impersonate, timeout=self._timeout, **session_opts) as session:
+                        response = await session.get(url, headers=HEADERS, allow_redirects=True, **request_opts)
                 except Exception as exc:
                     error = exc
 
@@ -252,10 +251,9 @@ def make_url_check_poster(pool: ProxyPool, impersonate: str | None = None):
     async def post(endpoint: str, urls: list[str], timeout: float):
         proxy = pool.next()
         try:
-            async with AsyncSession(impersonate=impersonate, timeout=timeout) as session:
-                response = await session.post(
-                    endpoint, json={"urls": urls}, proxies={"http": proxy, "https": proxy}
-                )
+            session_opts, request_opts = transport_options(proxy)
+            async with AsyncSession(impersonate=impersonate, timeout=timeout, **session_opts) as session:
+                response = await session.post(endpoint, json={"urls": urls}, **request_opts)
         except Exception:
             pool.ban(proxy, 60.0)
             raise

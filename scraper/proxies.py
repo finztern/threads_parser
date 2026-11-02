@@ -42,6 +42,17 @@ def mask_proxy(proxy: str) -> str:
     return proxy.rsplit("@", 1)[-1].split("://", 1)[-1]
 
 
+def transport_options(proxy: str) -> tuple[dict, dict]:
+    """(AsyncSession kwargs, request kwargs) for a pool entry: a proxy URL, or "ipv6://<address>"
+    = no proxy, bind to that source address and resolve IPv6 only.
+    """
+    if proxy.startswith("ipv6://"):
+        from curl_cffi.const import CurlOpt
+
+        return {"interface": proxy[7:], "curl_options": {CurlOpt.IPRESOLVE: 2}}, {}
+    return {}, {"proxies": {"http": proxy, "https": proxy}}
+
+
 class ProxyPool:
     def __init__(self, proxies: list[str], cooldown_seconds: float = 120.0) -> None:
         if not proxies:

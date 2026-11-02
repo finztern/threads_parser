@@ -82,6 +82,15 @@ python3 scripts/test_proxies.py --url "https://your-host/health"
 `hot_min_interval_seconds` (90), `hot_base_interval_seconds` (300), `hot_max_misses` (5). В логе строка
 `hot posts: pages=.. new=.. (x new/page)`. Выключить: `hot_posts: false`.
 
+**IPv6 /64 вместо прокси и Tor.** Если сервер получил целую подсеть /64, каждый запрос может уходить со
+случайного адреса из неё, без прокси. Порядок: 1) `scripts/ipv6_probe.py` (замер, принимает ли Threads такие
+адреса и не режет ли подсеть целиком); 2) `sudo bash scripts/ipv6_anyip.sh 2a01:ecc0:6000:1b6` (маршрут
+`local` на `lo` и `ip_nonlocal_bind`, переживает перезагрузку; если провайдер отвечает на NDP по каждому адресу,
+нужен ещё `ndppd` со `static`-правилом на подсеть); 3) в `.env`: `IPV6_PREFIX=<первые 4 группы>` (можно несколько
+через запятую) и `STORE_ENDPOINT=http://127.0.0.1:9000/store_items`; 4) запуск
+`docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d --build parser`. Парсер работает в сети хоста
+(нужно, чтобы привязываться к адресам), url-check в этом режиме всегда идёт напрямую.
+
 ## Схема payload (Exorde)
 
 ```

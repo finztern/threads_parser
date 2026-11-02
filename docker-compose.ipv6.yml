@@ -1,0 +1,12 @@
+# IPv6 mode: the parser leaves from random addresses of your own /64 (no proxies, no Tor).
+# Needs the host network so it can bind the addresses; the collector is then reached through the
+# host (the reverse tunnel listens on the host):
+#   docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d --build parser
+# .env: IPV6_PREFIX=2a01:ecc0:6000:1b6   STORE_ENDPOINT=http://127.0.0.1:9000/store_items
+services:
+  parser:
+    network_mode: host
+    extra_hosts: !reset []
+    environment:
+      IPV6_PREFIX: ${IPV6_PREFIX:?set IPV6_PREFIX in .env}
+      STORE_ENDPOINT: ${STORE_ENDPOINT:-http://127.0.0.1:9000/store_items}

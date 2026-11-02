@@ -21,6 +21,7 @@ from scraper.discovery import TargetRegistry
 from scraper.hotposts import HotPosts
 from scraper.http_client import ReplyTracker, ThreadsHttpClient, make_url_check_poster
 from scraper.proxies import ProxyPool
+from scraper.ipv6_pool import Ipv6Pool
 from scraper.tor_pool import TorPool
 from scraper.vpn import VpnPool, load_nodes, make_vpn_probe, make_vpn_url_check_poster
 from scraper.state import SeenCache, TokenBucket
@@ -62,8 +63,13 @@ async def http_runner(
 ) -> None:
     cfg = config_store.get()
     tor_instances = int(os.getenv("TOR_INSTANCES", "0") or 0)
+    ipv6_prefixes = os.getenv("IPV6_PREFIX", "").strip()
     try:
-        if tor_instances > 0:
+        if ipv6_prefixes:
+            # IPv6 mode: no proxies, a random address of your own /64 per request (see ipv6_pool.py).
+            pool = Ipv6Pool(ipv6_prefixes)
+            tor_instances = 0
+        elif tor_instances > 0:
             # Tor mode: proxies.txt is not used; every request gets its own circuit (see tor_pool.py).
             pool = TorPool(os.getenv("TOR_HOST", "tor"), int(os.getenv("TOR_BASE_PORT", "9050")), tor_instances)
         else:
@@ -75,7 +81,10 @@ async def http_runner(
         LOGGER.error("cannot start http mode: %s", exc)
         return
 
-    if tor_instances > 0:
+    if isinstance(pool, Ipv6Pool):
+        http_timeout = cfg.get("http_timeout_seconds", 15)
+        http_attempts = cfg.get("http_attempts", 3)
+    elif tor_instances > 0:
         LOGGER.info("http mode: Tor, %d instances (new circuit per request)", len(pool))
         # Tor is slower than a proxy and many exits are blocked: longer timeout, more retries.
         http_timeout = max(float(cfg.get("http_timeout_seconds", 15)), float(cfg.get("tor_http_timeout_seconds", 30)))
@@ -133,7 +142,9 @@ async def http_runner(
     if vpn is not None:
         set_url_check_poster(make_vpn_url_check_poster(vpn))
     else:
-        set_url_check_poster(make_url_check_poster(pool) if cfg.get("url_check_via_proxy", True) else None)
+        # The url-check API may be IPv4-only: in IPv6 mode it is always called directly.
+        via_pool = cfg.get("url_check_via_proxy", True) and not isinstance(pool, Ipv6Pool)
+        set_url_check_poster(make_url_check_poster(pool) if via_pool else None)
     loop_lag = {"max": 0.0}
     tune: dict = {"conc": None, "cfg_conc": None, "prev_conc": None, "prev_rps": 0.0, "hold": 0}
     lag_task = asyncio.create_task(_lag_monitor(loop_lag))
