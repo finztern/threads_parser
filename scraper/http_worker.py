@@ -134,6 +134,7 @@ async def http_runner(
             max_misses=int(cfg.get("hot_max_misses", 5)),
             max_posts=int(cfg.get("hot_max_posts", 100_000)),
             owns=owner,
+            fresh_min_interval=float(cfg.get("hot_fresh_min_interval_seconds", 45)),
         )
         hot.load()
 
