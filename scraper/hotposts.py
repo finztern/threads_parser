@@ -68,6 +68,10 @@ class HotPosts:
     def __len__(self) -> int:
         return len(self._posts)
 
+    def set_base_interval(self, seconds: float) -> None:
+        """Repeat-open pacing, changed on the fly by the auto budget."""
+        self._base = max(1.0, float(seconds))
+
     # ---- persistence ---------------------------------------------------------------------------
     def load(self) -> None:
         if not self._file or not self._file.is_file():

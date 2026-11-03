@@ -18,6 +18,7 @@ import httpx
 from scraper.config import ConfigStore
 from scraper.constants import BASE_DIR, LOGGER
 from scraper.discovery import TargetRegistry
+from scraper.budget import AutoBudget
 from scraper.hotposts import HotPosts
 from scraper.http_client import ReplyTracker, ThreadsHttpClient, make_url_check_poster
 from scraper.proxies import ProxyPool
@@ -136,6 +137,17 @@ async def http_runner(
         )
         hot.load()
 
+    # Auto budget: tunes profile pages vs hot post pages and the repeat interval from measured yield.
+    budget: AutoBudget | None = None
+    if hot is not None and cfg.get("auto_budget", True):
+        budget = AutoBudget(
+            _resolve(cfg.get("budget_state_file", "data/budget.json")),
+            profiles=int((cfg.get("discovery", {}) or {}).get("max_targets_per_cycle", 1500)),
+            hot=int(cfg.get("hot_posts_per_cycle", 2000)),
+            base_interval=float(cfg.get("hot_base_interval_seconds", 300)),
+        )
+        budget.load()
+
     # One client for url-check and store_items. Defaults (20 keepalive connections, 5 s expiry, no
     # retries) force a new TLS handshake for most of ~100 parallel dispatches and fail under bursts.
     # retries=2 only repeats failed CONNECTs, so nothing is ever sent twice.
@@ -187,7 +199,9 @@ async def http_runner(
                 cycle_start = time.monotonic()
                 cfg = config_store.get()
                 disc = cfg.get("discovery", {}) or {}
-                max_per_cycle = int(disc.get("max_targets_per_cycle", 400))
+                max_per_cycle = budget.profiles if budget else int(disc.get("max_targets_per_cycle", 400))
+                if budget is not None and hot is not None:
+                    hot.set_base_interval(budget.base_interval)
                 max_age = cfg.get("max_age_seconds", 86400)
 
                 seeds = load_targets(cfg)
@@ -200,7 +214,7 @@ async def http_runner(
                 # Skip what earlier cycles are still fetching.
                 batch = [u for u in registry.due(max_per_cycle, float(disc.get("explore_ratio", 0.3))) if u not in inflight_targets]
                 hot_batch = (
-                    [h for h in hot.due(int(cfg.get("hot_posts_per_cycle", 2000))) if h[2] not in inflight_hot]
+                    [h for h in hot.due(budget.hot if budget else int(cfg.get("hot_posts_per_cycle", 2000))) if h[2] not in inflight_hot]
                     if hot is not None
                     else []
                 )
@@ -286,6 +300,7 @@ async def http_runner(
                             totals.update(result)
                             # Items new to Exorde (rate-limited ones were new too) = this target's yield.
                             registry.report_yield(username, result["to_send"] + result["rate_limited"])
+                            totals["profile_new"] += result["to_send"] + result["rate_limited"]
                             timing["dispatch_run"] += time.monotonic() - t_run
                             timing["dispatches"] += 1
                     except Exception:
@@ -430,6 +445,16 @@ async def http_runner(
                     timing["dispatch_run"] / max(timing["dispatches"], 1),
                     int(cfg.get("dispatch_concurrency", 64)),
                 )
+                if budget is not None:
+                    message = budget.update(
+                        len(batch),
+                        totals["profile_new"],
+                        totals["hot_first_new"],
+                        totals["hot_again_pages"],
+                        totals["hot_again_new"],
+                    )
+                    if message:
+                        LOGGER.info("auto budget: %s", message)
                 if autotune:
                     cycle_seconds = max(time.monotonic() - cycle_start, 0.001)
                     message = _autotune(
