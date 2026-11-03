@@ -71,7 +71,8 @@ async def http_runner(
             tor_instances = 0
         elif tor_instances > 0:
             # Tor mode: proxies.txt is not used; every request gets its own circuit (see tor_pool.py).
-            pool = TorPool(os.getenv("TOR_HOST", "tor"), int(os.getenv("TOR_BASE_PORT", "9050")), tor_instances)
+            pool = TorPool(os.getenv("TOR_HOST", "tor"), int(os.getenv("TOR_BASE_PORT", "9050")), tor_instances,
+                           circuit_reuse=int(cfg.get("tor_circuit_reuse", 1)))
         else:
             pool = ProxyPool.from_file(
                 _resolve(cfg.get("proxies_file", "proxies.txt")),

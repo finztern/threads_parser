@@ -20,7 +20,7 @@ _BAN_SECONDS = 60.0
 class TorPool:
     rotating = True
 
-    def __init__(self, host: str, base_port: int, instances: int) -> None:
+    def __init__(self, host: str, base_port: int, instances: int, circuit_reuse: int = 1) -> None:
         """`host` may list several machines, comma separated, each optionally with its own instance
         count: "host.docker.internal=20,1.2.3.4=70" (without "=N" the default `instances` is used).
         Machine k runs Tor clients on base_port .. base_port+count-1."""
@@ -37,6 +37,10 @@ class TorPool:
         self._endpoints = [
             f"{name}:{base_port + i}" for i in range(max(counts.values())) for name, n in counts.items() if i < n
         ]
+        # Building a circuit is the most expensive thing Tor does: reuse one for `circuit_reuse`
+        # requests of an instance before switching to a new SOCKS user name (= new circuit).
+        self._reuse = max(1, int(circuit_reuse))
+        self._user: dict[str, list] = {}  # endpoint -> [user name, requests left on it]
         self._idx = 0
         self._streak: dict[str, int] = {}
         self._banned_until: dict[str, float] = {}
@@ -56,7 +60,11 @@ class TorPool:
             endpoint = self._endpoints[self._idx % n]
             self._idx += 1
         # socks5h: the exit node resolves the host name (no DNS leak, works for any exit).
-        return f"socks5h://{secrets.token_hex(6)}:x@{endpoint}"
+        slot = self._user.get(endpoint)
+        if slot is None or slot[1] <= 0:
+            slot = self._user[endpoint] = [secrets.token_hex(6), self._reuse]
+        slot[1] -= 1
+        return f"socks5h://{slot[0]}:x@{endpoint}"
 
     @staticmethod
     def _endpoint(proxy: str) -> str:
