@@ -274,6 +274,9 @@ async def http_runner(
                         return
                     new = 0
                     if replies:
+                        if discovery_on:
+                            # Reply authors are the main source of new profiles (hot mode never saw them).
+                            totals["discovered"] += registry.observe({r.username for r in replies})
                         try:
                             async with dispatch_sem:
                                 result = await dispatch_posts(replies, cfg, store_client, token_bucket, seen_cache)
