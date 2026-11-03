@@ -148,6 +148,32 @@ async def http_runner(
     loop_lag = {"max": 0.0}
     tune: dict = {"conc": None, "cfg_conc": None, "prev_conc": None, "prev_rps": 0.0, "hold": 0}
     lag_task = asyncio.create_task(_lag_monitor(loop_lag))
+    # Continuous flow: a cycle does not wait for its last slow requests. Counters are shared by all
+    # cycles (cleared at every cycle start), so late jobs still count into the cycle that is running.
+    totals: Counter[str] = Counter()
+    timing: Counter[str] = Counter()
+    live: set[asyncio.Task] = set()  # all jobs still running, from this and earlier cycles
+    inflight_targets: set[str] = set()  # profiles being fetched right now (never started twice)
+    inflight_hot: set[str] = set()  # post pks being fetched right now
+
+    def spawn(coro, bag: set[str], key: str) -> None:
+        async def guarded() -> None:
+            try:
+                await coro
+            finally:
+                bag.discard(key)
+
+        bag.add(key)
+        task = asyncio.create_task(guarded())
+        live.add(task)
+
+        def done(t: asyncio.Task) -> None:
+            live.discard(t)
+            if not t.cancelled():
+                t.exception()  # mark retrieved; jobs log their own errors
+
+        task.add_done_callback(done)
+
     async with httpx.AsyncClient(transport=store_transport) as store_client:
         try:
             while not stop_event.is_set():
@@ -164,10 +190,18 @@ async def http_runner(
                     continue
                 registry.sync_seeds(seeds)
 
-                batch = registry.due(max_per_cycle, float(disc.get("explore_ratio", 0.3)))
-                hot_batch = hot.due(int(cfg.get("hot_posts_per_cycle", 2000))) if hot is not None else []
+                # Skip what earlier cycles are still fetching.
+                batch = [u for u in registry.due(max_per_cycle, float(disc.get("explore_ratio", 0.3))) if u not in inflight_targets]
+                hot_batch = (
+                    [h for h in hot.due(int(cfg.get("hot_posts_per_cycle", 2000))) if h[2] not in inflight_hot]
+                    if hot is not None
+                    else []
+                )
                 if not batch and not hot_batch:
-                    await _sleep(stop_event, min(cfg.get("poll_interval_seconds", 30), registry.seconds_until_next_due() + 0.5))
+                    if live:
+                        await asyncio.wait(live, timeout=2.0)
+                    else:
+                        await _sleep(stop_event, min(cfg.get("poll_interval_seconds", 30), registry.seconds_until_next_due() + 0.5))
                     continue
 
                 # http_concurrency limits HTTP requests (inside the client); targets in flight
@@ -192,11 +226,11 @@ async def http_runner(
                 fetch_replies = cfg.get("fetch_replies", True)
                 reply_max_age = cfg.get("reply_post_max_age_seconds", 7 * 86400)
                 reply_min_growth = max(1, int(cfg.get("reply_min_growth", 1)))
-                totals: Counter[str] = Counter()
+                totals.clear()
                 stats_before = Counter(client.stats)
                 client.error_kinds.clear()
                 # Per-cycle timing (seconds summed over targets) to see where the time goes.
-                timing: Counter[str] = Counter()
+                timing.clear()
 
                 async def job(username: str) -> None:
                     posts: list = []
@@ -295,10 +329,15 @@ async def http_runner(
                     hot.report(pk, new)
 
                 # Hot posts go first: the request semaphore serves them before the profile fetches.
-                await asyncio.gather(
-                    *(hot_job(u, c, k) for u, c, k in hot_batch),
-                    *(job(u) for u in batch),
-                )
+                for u, c, k in hot_batch:
+                    spawn(hot_job(u, c, k), inflight_hot, k)
+                for u in batch:
+                    spawn(job(u), inflight_targets, u)
+                # Next cycle starts as soon as the queue is drained and only a slow tail (at most
+                # cycle_overlap_ratio of the slots) is still in flight; 0 = wait for everything.
+                tail = int(target_slots * max(0.0, float(cfg.get("cycle_overlap_ratio", 0.5))))
+                while len(live) > tail and not stop_event.is_set():
+                    await asyncio.wait(set(live), return_when=asyncio.FIRST_COMPLETED)
                 if hot is not None:
                     hot.expire()
                     hot.save()
@@ -408,6 +447,10 @@ async def http_runner(
                     jitter = base * cfg.get("poll_jitter_ratio", 0.25) * (2 * random.random() - 1)
                     await _sleep(stop_event, max(0.0, base + jitter - (time.monotonic() - cycle_start)))
         finally:
+            for task in list(live):
+                task.cancel()
+            if live:
+                await asyncio.gather(*live, return_exceptions=True)
             lag_task.cancel()
             set_url_check_poster(None)
             if vpn is not None:
