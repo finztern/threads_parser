@@ -56,7 +56,8 @@ class HotPosts:
         self._file = state_file
         self._max_age = max_age
         self._min_growth = max(1, min_growth)
-        self._base = base_interval
+        self._base = base_interval  # re-open pacing of posts that keep paying (base / gain)
+        self._barren_base = base_interval  # pacing of posts that stopped paying (tuned by the auto budget)
         self._min = min_interval
         self._max = max_interval
         self._max_misses = max_misses
@@ -68,9 +69,10 @@ class HotPosts:
     def __len__(self) -> int:
         return len(self._posts)
 
-    def set_base_interval(self, seconds: float) -> None:
-        """Repeat-open pacing, changed on the fly by the auto budget."""
-        self._base = max(1.0, float(seconds))
+    def set_barren_interval(self, seconds: float) -> None:
+        """Pacing of re-opens of posts that gave nothing lately; changed on the fly by the auto budget.
+        Posts that keep paying are NOT slowed down by it (they are the best data there is)."""
+        self._barren_base = max(1.0, float(seconds))
 
     # ---- persistence ---------------------------------------------------------------------------
     def load(self) -> None:
@@ -174,7 +176,7 @@ class HotPosts:
             if p.misses == 0 and p.gain >= 1.5:
                 interval = self._base / p.gain
             else:
-                interval = self._base * 4 * 2**p.misses  # 20 min, then 40, 80, ... (capped by max_interval)
+                interval = self._barren_base * 4 * 2**p.misses  # 20 min, then 40, 80, ... (capped by max_interval)
             p.next_due = now + min(self._max, max(self._min, interval))
         self._dirty = True
 

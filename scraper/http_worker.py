@@ -201,7 +201,7 @@ async def http_runner(
                 disc = cfg.get("discovery", {}) or {}
                 max_per_cycle = budget.profiles if budget else int(disc.get("max_targets_per_cycle", 400))
                 if budget is not None and hot is not None:
-                    hot.set_base_interval(budget.base_interval)
+                    hot.set_barren_interval(budget.base_interval)
                 max_age = cfg.get("max_age_seconds", 86400)
 
                 seeds = load_targets(cfg)

@@ -26,9 +26,9 @@ class AutoBudget:
         base_interval: float,
         profiles_bounds: tuple[int, int] = (500, 6000),
         hot_bounds: tuple[int, int] = (300, 4000),
-        interval_bounds: tuple[float, float] = (300.0, 7200.0),
+        interval_bounds: tuple[float, float] = (300.0, 3600.0),
         step: float = 0.12,
-        min_requests: int = 50,
+        min_requests: int = 100,
     ) -> None:
         self._file = state_file
         self.profiles = profiles
@@ -74,7 +74,7 @@ class AutoBudget:
 
     @staticmethod
     def _ema(old: float | None, new: float) -> float:
-        return new if old is None else 0.5 * old + 0.5 * new
+        return new if old is None else 0.7 * old + 0.3 * new  # smooth: short cycles are noisy
 
     # ---- the decision ----------------------------------------------------------------------------
     def update(self, profile_requests: int, profile_new: int, first_new: int, repeat_pages: int, repeat_new: int) -> str | None:
@@ -97,7 +97,8 @@ class AutoBudget:
         elif yr > yp * 1.25:
             self.hot = self._clamp(int(self.hot * (1 + self._step)) + 1, self._hb)
             self.profiles = self._clamp(int(self.profiles * (1 - self._step)), self._pb)
-        # Repeat opens that barely pay are made rarer, ones that pay well more frequent.
+        # Re-opens of posts that stopped paying are made rarer while repeats do not pay (posts that keep paying
+        # are never slowed down), and more frequent again when repeats pay well.
         if yr < 0.2:
             self.base_interval = min(self._ib[1], self.base_interval * 1.15)
         elif yr > 0.5:
