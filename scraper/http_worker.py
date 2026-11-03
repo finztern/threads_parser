@@ -28,7 +28,7 @@ from scraper.tor_pool import TorPool
 from scraper.vpn import VpnPool, load_nodes, make_vpn_probe, make_vpn_url_check_poster
 from scraper.state import SeenCache, TokenBucket
 from scraper.pipeline import configure_url_check, set_url_check_poster
-from scraper.worker import dispatch_posts
+from scraper.worker import AGE_LABELS, dispatch_posts
 
 
 def _resolve(path_str: str) -> Path:
@@ -421,6 +421,13 @@ async def http_runner(
                     totals["too_short"],
                     totals["non_text"],
                 )
+                age_parts = []
+                for i, label in enumerate(AGE_LABELS):
+                    new_n, known_n = totals[f"age_new_{i}"], totals[f"age_known_{i}"]
+                    if new_n + known_n:
+                        age_parts.append(f"{label}: {new_n}/{known_n} ({100.0 * new_n / (new_n + known_n):.0f}% new)")
+                if age_parts:
+                    LOGGER.info("item age (new/known to Exorde): %s", " | ".join(age_parts))
                 if hot is not None:
                     LOGGER.info(
                         "hot posts: pages=%d new=%d (%.2f new/page) failed=%d | first opens=%d -> %.2f new/page, "

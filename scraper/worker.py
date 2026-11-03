@@ -7,6 +7,18 @@ from datetime import datetime, timezone
 
 import httpx
 
+# Age of an item when we fetch it, in seconds: diagnostic buckets for "new vs already known to Exorde".
+AGE_EDGES = (120, 300, 900, 3600, 21600)
+AGE_LABELS = ("<2m", "2-5m", "5-15m", "15-60m", "1-6h", ">6h")
+
+
+def age_bucket(post: RawThreadsPost, now: datetime) -> int:
+    age = (now - post.created_at.astimezone(timezone.utc)).total_seconds()
+    for i, edge in enumerate(AGE_EDGES):
+        if age < edge:
+            return i
+    return len(AGE_EDGES)
+
 from scraper.pipeline import RawThreadsPost, build_payload, check_url_duplicates, send_batch
 from scraper.state import SeenCache, TokenBucket
 from scraper.textfilter import skip_reason
@@ -63,6 +75,7 @@ async def dispatch_posts(
     remote_duplicates = 0
     remote_duplicates_replies = 0  # subset of remote_duplicates that are replies (yield statistics)
     url_unverified = 0
+    ages: dict[str, int] = {}  # age_new_<bucket> / age_known_<bucket>: how fresh is what Exorde lacks / has
     url_check_endpoint = cfg.get("url_check_endpoint")
     if url_check_endpoint and claimed:
         known, unverified = await check_url_duplicates(
@@ -71,6 +84,8 @@ async def dispatch_posts(
         still: list[RawThreadsPost] = []
         for post in claimed:
             if post.url in known:
+                key = f"age_known_{age_bucket(post, now)}"
+                ages[key] = ages.get(key, 0) + 1
                 remote_duplicates += 1
                 remote_duplicates_replies += bool(post.external_parent_id)
                 await seen_cache.confirm(post.external_id)  # remember: do not ask again
@@ -78,6 +93,8 @@ async def dispatch_posts(
                 url_unverified += 1
                 await seen_cache.release(post.external_id)
             else:
+                key = f"age_new_{age_bucket(post, now)}"
+                ages[key] = ages.get(key, 0) + 1
                 still.append(post)
         claimed = still
 
@@ -123,4 +140,5 @@ async def dispatch_posts(
         "remote_dup_replies": remote_duplicates_replies,
         "sent_replies": sent_replies,
         "url_unverified": url_unverified,
+        **ages,
     }
