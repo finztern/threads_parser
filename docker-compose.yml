@@ -13,6 +13,7 @@ services:
     environment:
       STORE_ENDPOINT: ${STORE_ENDPOINT:-http://host.docker.internal:9000/store_items}
       TOR_HOST: ${TOR_HOST:-host.docker.internal}
+      PARSER_SHARD: ${PARSER_SHARD:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

@@ -21,6 +21,7 @@ from scraper.discovery import TargetRegistry
 from scraper.hotposts import HotPosts
 from scraper.http_client import ReplyTracker, ThreadsHttpClient, make_url_check_poster
 from scraper.proxies import ProxyPool
+from scraper.shard import make_owner
 from scraper.ipv6_pool import Ipv6Pool
 from scraper.tor_pool import TorPool
 from scraper.vpn import VpnPool, load_nodes, make_vpn_probe, make_vpn_url_check_poster
@@ -104,6 +105,9 @@ async def http_runner(
     )
     tracker = ReplyTracker()
 
+    owner = make_owner(os.getenv("PARSER_SHARD", ""))
+    if owner is not None:
+        LOGGER.info("shard %s: this instance owns only its part of the usernames", os.getenv("PARSER_SHARD"))
     disc = cfg.get("discovery", {}) or {}
     discovery_on = bool(disc.get("enabled", True))
     registry = TargetRegistry(
@@ -112,6 +116,7 @@ async def http_runner(
         max_interval=disc.get("max_interval_seconds", 21600),
         seed_interval=cfg.get("poll_interval_seconds", 30),
         max_known=disc.get("max_known_targets", 200_000),
+        owns=owner,
     )
     if discovery_on:
         registry.load()
@@ -127,6 +132,7 @@ async def http_runner(
             min_interval=float(cfg.get("hot_min_interval_seconds", 90)),
             max_misses=int(cfg.get("hot_max_misses", 5)),
             max_posts=int(cfg.get("hot_max_posts", 100_000)),
+            owns=owner,
         )
         hot.load()
 

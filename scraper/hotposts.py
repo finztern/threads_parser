@@ -50,7 +50,9 @@ class HotPosts:
         max_interval: float = 6 * 3600.0,
         max_misses: int = 5,
         max_posts: int = 100_000,
+        owns=None,
     ) -> None:
+        self._owns = owns or (lambda _name: True)  # shard filter on the post author
         self._file = state_file
         self._max_age = max_age
         self._min_growth = max(1, min_growth)
@@ -73,6 +75,8 @@ class HotPosts:
         try:
             raw: dict[str, Any] = json.loads(self._file.read_text(encoding="utf-8"))
             for pk, v in raw.get("posts", {}).items():
+                if not self._owns(v[0]):
+                    continue
                 self._posts[pk] = _Post(v[0], v[1], float(v[2]), int(v[3]), int(v[4]), float(v[5]), int(v[6]), float(v[7]))
             LOGGER.info("hot posts: loaded %d posts from %s", len(self._posts), self._file)
         except (OSError, ValueError, IndexError, TypeError):
@@ -107,7 +111,7 @@ class HotPosts:
         for post in posts:
             count = int((post.extra or {}).get("direct_reply_count") or 0)
             created = post.created_at.timestamp()
-            if count <= 0 or now - created > self._max_age:
+            if count <= 0 or now - created > self._max_age or not self._owns(post.username):
                 continue
             known = self._posts.get(post.external_id)
             if known is None:

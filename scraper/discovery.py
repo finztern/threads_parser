@@ -48,7 +48,9 @@ class TargetRegistry:
         max_interval: float = 21600.0,
         seed_interval: float = 30.0,
         max_known: int = 200_000,
+        owns=None,
     ) -> None:
+        self._owns = owns or (lambda _name: True)  # shard filter: usernames this instance may track
         self._file = state_file
         self._min = min_interval
         self._max = max_interval
@@ -66,6 +68,8 @@ class TargetRegistry:
         try:
             raw = json.loads(self._file.read_text(encoding="utf-8"))
             for name, v in raw.get("targets", {}).items():
+                if not self._owns(name):
+                    continue
                 self._targets[name] = TargetState(
                     interval=float(v[0]),
                     next_due=float(v[1]),
@@ -104,7 +108,7 @@ class TargetRegistry:
 
     # ---- membership ----------------------------------------------------
     def sync_seeds(self, names: list[str]) -> None:
-        wanted = {n.lower(): n for n in names if USERNAME_RE.match(n)}
+        wanted = {n.lower(): n for n in names if USERNAME_RE.match(n) and self._owns(n)}
         now = time.time()
         for key, name in wanted.items():
             state = self._targets.get(key)
@@ -125,7 +129,7 @@ class TargetRegistry:
         added = 0
         for name in usernames:
             key = name.lower()
-            if key in self._targets or key in self._dead or not USERNAME_RE.match(name):
+            if key in self._targets or key in self._dead or not USERNAME_RE.match(name) or not self._owns(name):
                 continue
             if len(self._targets) >= self._max_known:
                 self._evict()
