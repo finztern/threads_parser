@@ -40,6 +40,27 @@ services:
         max-file: "3"
     restart: unless-stopped
 
+  # Development stand-in for the store_items collector (scripts/mock_collector.py): validates the schema,
+  # drops duplicates, logs how many items per second would be accepted. Uploads nothing anywhere.
+  # Enable: COMPOSE_PROFILES=tor,mock and STORE_ENDPOINT=http://collector:9000/store_items in .env.
+  collector:
+    profiles: ["mock"]
+    build: .
+    command: ["python3", "scripts/mock_collector.py"]
+    environment:
+      MOCK_PORT: "9000"
+      MOCK_MIN_LEN: ${MOCK_MIN_LEN:-7}
+      MOCK_SEEN_FILE: /app/data/mock_collector_seen.txt
+    volumes:
+      - ./data:/app/data
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+    restart: unless-stopped
+
   # Many Tor clients; the parser takes a fresh circuit for every request (scraper/tor_pool.py).
   # Not started by default: enable with COMPOSE_PROFILES=tor (and TOR_INSTANCES>0) in .env.
   tor:

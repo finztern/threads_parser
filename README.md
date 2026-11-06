@@ -140,3 +140,11 @@ python3 scripts/test_proxies.py --url "https://your-host/health"
 пока повторы дают < 0.2 new/запрос, и сокращается при > 0.5. Значения из `config.yaml` (`max_targets_per_cycle`,
 `hot_posts_per_cycle`, `hot_base_interval_seconds`) - только стартовые. Текущие значения хранятся в `data/budget.json`
 (удалить файл = начать заново с config). В логе: строка `auto budget: ...`, когда что-то поменялось.
+
+## Мок-коллектор для разработки
+
+Пока настоящий коллектор недоступен: `scripts/mock_collector.py` (только стандартная библиотека) принимает
+`POST /store_items`, проверяет схему Exorde (UTC `...Z`, `summary` - JSON-строка, `domain`, `https` url), отбрасывает дубли по
+url и короткие тексты и каждые 10 секунд пишет в лог, сколько элементов в секунду было бы принято. Никуда ничего не
+загружает. В `.env`: `COMPOSE_PROFILES=tor,mock` и `STORE_ENDPOINT=http://collector:9000/store_items`.
+Счётчики: `GET /stats`, состояние дублей хранится в `data/mock_collector_seen.txt`.
