@@ -460,6 +460,8 @@ async def http_runner(
                         totals["hot_first_new"],
                         totals["hot_again_pages"],
                         totals["hot_again_new"],
+                        new_items=totals["to_send"] + totals["rate_limited"],
+                        seconds=time.monotonic() - cycle_start,
                     )
                     if message:
                         LOGGER.info("auto budget: %s", message)
