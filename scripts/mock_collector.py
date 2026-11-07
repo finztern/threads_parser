@@ -2,6 +2,9 @@
 """Mock store_items collector for parser development (standard library only).
 
 POST /store_items  {"items": [...]}  ->  {"count": N, "results": {"to_gpu": a, "duplicate": b, ...}}
+POST /v1/check     {"urls": [...]} -> JSON list of urls already known: Exorde's answer (forwarded to the real
+                   url-check API) UNION everything this mock has accepted. This stands in for "Exorde learns what the
+                   real collector uploaded"; without it every restart/eviction makes already-stored items look new.
 GET  /stats        -> JSON counters      GET /health -> "ok"
 
 It validates the Exorde item schema, drops duplicates (by url) and short texts, counts what would be
@@ -10,6 +13,8 @@ accepted and logs the rate every few seconds. It does NOT upload anywhere.
 Env: MOCK_PORT=9000  MOCK_MIN_LEN=7  MOCK_DOMAIN=threads.net  MOCK_STATS_SECONDS=10
      MOCK_SEEN_FILE=data/mock_collector_seen.txt (url hashes, survives restarts; empty = in memory only)
      MOCK_SAVE_FILE= (optional JSONL with accepted items; grows without limit, use for short debugging)
+     MOCK_UPSTREAM_CHECK=https://url-check.exorde.network/v1/check (empty = answer from the mock's own memory only)
+Parser side (config.yaml): url_check_endpoint: "http://collector:9000/v1/check"
 """
 from __future__ import annotations
 
@@ -20,6 +25,7 @@ import os
 import re
 import threading
 import time
+import urllib.request
 from collections import Counter, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -29,6 +35,7 @@ DOMAIN = os.getenv("MOCK_DOMAIN", "threads.net")
 STATS_SECONDS = float(os.getenv("MOCK_STATS_SECONDS", "10"))
 SEEN_FILE = os.getenv("MOCK_SEEN_FILE", "data/mock_collector_seen.txt")
 SAVE_FILE = os.getenv("MOCK_SAVE_FILE", "")
+UPSTREAM_CHECK = os.getenv("MOCK_UPSTREAM_CHECK", "https://url-check.exorde.network/v1/check")
 
 CREATED_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 REQUIRED = ("content", "external_id", "created_at", "url", "title", "author", "username", "external_parent_id", "domain", "summary")
@@ -111,6 +118,33 @@ def process(items: list) -> dict[str, int]:
     return dict(results)
 
 
+def upstream_known(urls: list[str]) -> list[str]:
+    """Which urls the real Exorde url-check already knows (raises on failure: the parser then does not send)."""
+    request = urllib.request.Request(
+        UPSTREAM_CHECK, json.dumps({"urls": urls}).encode(), {"Content-Type": "application/json"}, method="POST"
+    )
+    with urllib.request.urlopen(request, timeout=8) as response:
+        data = json.loads(response.read())
+    if not isinstance(data, list):
+        raise ValueError("unexpected upstream answer")
+    return [u for u in data if isinstance(u, str)]
+
+
+def check(urls: list[str]) -> list[str]:
+    known: set[str] = set()
+    with _lock:
+        known.update(u for u in urls if _hash(u) in _seen)
+        _totals["check_urls"] += len(urls)
+    if UPSTREAM_CHECK:
+        upstream = upstream_known(urls)
+        known.update(upstream)
+        with _lock:
+            _totals["check_upstream_known"] += len(upstream)
+    with _lock:
+        _totals["check_known"] += len(known)
+    return list(known)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "mock-collector"
@@ -134,6 +168,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b'{"detail":"Not Found"}')
 
     def do_POST(self):
+        if self.path == "/v1/check":
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(length) or b"{}")
+                urls = data.get("urls") if isinstance(data, dict) else None
+                if not isinstance(urls, list) or not all(isinstance(u, str) for u in urls):
+                    raise ValueError('body must be {"urls": [...]}')
+            except (ValueError, OSError) as exc:
+                self._send(422, json.dumps({"detail": str(exc)}).encode())
+                return
+            try:
+                self._send(200, json.dumps(check(urls)).encode())
+            except Exception as exc:  # upstream down: fail closed, the parser will not send these urls
+                LOG.warning("url check upstream failed: %s", exc)
+                self._send(503, json.dumps({"detail": "upstream check failed"}).encode())
+            return
         if self.path != "/store_items":
             self._send(404, b'{"detail":"Not Found"}')
             return
