@@ -158,8 +158,12 @@ async def http_runner(
     )
     # url-check: VPN nodes from vpn_nodes.txt (fastest healthy one, automatic replacement) when the file
     # has nodes; otherwise through the proxy pool (fresh proxy + connection per request).
-    vpn = await _start_vpn(cfg)
-    if vpn is not None:
+    # url_check_direct (default on): the url-check API is called straight from this host (no VPN, no proxy).
+    vpn = None if cfg.get("url_check_direct", True) else await _start_vpn(cfg)
+    if cfg.get("url_check_direct", True):
+        LOGGER.info("url-check: direct from this host (url_check_direct: false switches to VPN nodes / proxy pool)")
+        set_url_check_poster(None)
+    elif vpn is not None:
         set_url_check_poster(make_vpn_url_check_poster(vpn))
     else:
         # The url-check API may be IPv4-only: in IPv6 mode it is always called directly.

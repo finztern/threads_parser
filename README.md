@@ -149,3 +149,8 @@ python3 scripts/test_proxies.py --url "https://your-host/health"
 url и короткие тексты и каждые 10 секунд пишет в лог, сколько элементов в секунду было бы принято. Никуда ничего не
 загружает. В `.env`: `COMPOSE_PROFILES=tor,mock` и `STORE_ENDPOINT=http://collector:9000/store_items`.
 Счётчики: `GET /stats`, состояние дублей хранится в `data/mock_collector_seen.txt`.
+
+## url-check напрямую с хоста
+
+По умолчанию (`url_check_direct: true`) url-check ходит напрямую с IP сервера, без VPN-нод и без прокси/Tor.
+`url_check_direct: false` возвращает прежнее поведение (VPN-ноды из `vpn/nodes.txt`, иначе пул прокси/Tor).
