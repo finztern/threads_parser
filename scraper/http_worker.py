@@ -116,7 +116,7 @@ async def http_runner(
         min_interval=disc.get("min_interval_seconds", 300),
         max_interval=disc.get("max_interval_seconds", 21600),
         seed_interval=cfg.get("poll_interval_seconds", 30),
-        max_known=disc.get("max_known_targets", 200_000),
+        max_known=disc.get("max_known_targets", 400_000),
         owns=owner,
     )
     if discovery_on:

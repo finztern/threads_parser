@@ -143,9 +143,10 @@ class TargetRegistry:
         return added
 
     def _evict(self) -> None:
-        """Drop the ~5% idlest non-seed targets (longest pause, already scraped)."""
+        """Drop the ~5% least valuable non-seed targets that were already scraped: lowest recent yield of new
+        items first, then fewest fresh posts, then the longest pause. Targets that paid off are kept."""
         candidates = [(k, t) for k, t in self._targets.items() if not t.seed and t.scrapes > 0]
-        candidates.sort(key=lambda kt: (-kt[1].interval, kt[1].fresh_total))
+        candidates.sort(key=lambda kt: (kt[1].yield_ema, kt[1].fresh_total, -kt[1].interval))
         for key, _ in candidates[: max(1, self._max_known // 20)]:
             del self._targets[key]
         self._dirty = True
