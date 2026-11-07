@@ -15,6 +15,7 @@ State is persisted to a JSON file so restarts keep the list.
 """
 from __future__ import annotations
 
+import heapq
 import json
 import os
 import random
@@ -143,11 +144,16 @@ class TargetRegistry:
         return added
 
     def _evict(self) -> None:
-        """Drop the ~5% least valuable non-seed targets that were already scraped: lowest recent yield of new
-        items first, then fewest fresh posts, then the longest pause. Targets that paid off are kept."""
-        candidates = [(k, t) for k, t in self._targets.items() if not t.seed and t.scrapes > 0]
-        candidates.sort(key=lambda kt: (kt[1].yield_ema, kt[1].fresh_total, -kt[1].interval))
-        for key, _ in candidates[: max(1, self._max_known // 20)]:
+        """Drop the ~5% least valuable non-seed targets. Never-scraped ones go first (nothing is known about
+        them), then scraped ones by lowest recent yield of new items, fewest fresh posts, longest pause.
+        Profiles that paid off are the last to go (they are the part of the list that took hours to learn).
+        """
+        count = max(1, self._max_known // 20)
+        candidates = ((k, t) for k, t in self._targets.items() if not t.seed)
+        worst = heapq.nsmallest(
+            count, candidates, key=lambda kt: (kt[1].yield_ema, kt[1].fresh_total, kt[1].scrapes, -kt[1].interval)
+        )
+        for key, _ in worst:
             del self._targets[key]
         self._dirty = True
 
