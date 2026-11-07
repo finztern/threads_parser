@@ -5,8 +5,13 @@ send is not lost - it becomes claimable again).
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import time
 from collections import OrderedDict
+from pathlib import Path
+
+from scraper.constants import LOGGER
 
 
 class TokenBucket:
@@ -54,10 +59,44 @@ class SeenCache:
       (until evicted by size limit).
     """
 
-    def __init__(self, max_size: int) -> None:
+    def __init__(self, max_size: int, state_file: "Path | None" = None) -> None:
         self._max_size = max_size
         self._store: OrderedDict[str, str] = OrderedDict()
         self._lock = asyncio.Lock()
+        self._file = state_file
+        self._dirty = False
+
+    # ---- persistence: a restart must not re-send everything that was already confirmed ----------------
+    def load(self) -> None:
+        if not self._file or not self._file.is_file():
+            return
+        try:
+            ids = json.loads(self._file.read_text(encoding="utf-8"))
+            for external_id in ids[-self._max_size :]:
+                self._store[str(external_id)] = "confirmed"
+            LOGGER.info("seen cache: loaded %d confirmed ids from %s", len(self._store), self._file)
+        except (OSError, ValueError, TypeError):
+            LOGGER.exception("seen cache: could not read %s, starting empty", self._file)
+
+    async def save(self) -> None:
+        """Write the confirmed ids (oldest first). The snapshot is taken in the loop, the dump in a thread."""
+        if not self._file or not self._dirty:
+            return
+        ids = [k for k, v in self._store.items() if v == "confirmed"]
+        self._dirty = False
+        file = self._file
+
+        def write() -> None:
+            file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(ids, separators=(",", ":")), encoding="utf-8")
+            os.replace(tmp, file)
+
+        try:
+            await asyncio.to_thread(write)
+        except OSError:
+            self._dirty = True
+            LOGGER.exception("seen cache: could not write %s", file)
 
     async def try_claim(self, external_id: str) -> bool:
         async with self._lock:
@@ -72,6 +111,7 @@ class SeenCache:
         async with self._lock:
             self._store[external_id] = "confirmed"
             self._store.move_to_end(external_id)
+            self._dirty = True
 
     async def release(self, external_id: str) -> None:
         """Undo a claim after a failed send, so it can be retried next cycle."""
