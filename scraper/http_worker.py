@@ -172,6 +172,11 @@ async def http_runner(
     loop_lag = {"max": 0.0}
     tune: dict = {"conc": None, "cfg_conc": None, "prev_conc": None, "prev_rps": 0.0, "hold": 0}
     lag_task = asyncio.create_task(_lag_monitor(loop_lag))
+    profile_task = None
+    if float(os.getenv("PROFILE_SECONDS", "0") or 0) > 0:
+        from scraper.profiling import profile_main_thread
+
+        profile_task = asyncio.create_task(profile_main_thread(float(os.environ["PROFILE_SECONDS"])))
     # Continuous flow: a cycle does not wait for its last slow requests. Counters are shared by all
     # cycles (cleared at every cycle start), so late jobs still count into the cycle that is running.
     totals: Counter[str] = Counter()
@@ -497,6 +502,8 @@ async def http_runner(
                 task.cancel()
             if live:
                 await asyncio.gather(*live, return_exceptions=True)
+            if profile_task is not None:
+                profile_task.cancel()
             lag_task.cancel()
             set_url_check_poster(None)
             if vpn is not None:
