@@ -61,12 +61,12 @@ def _parse_post_node(node: dict[str, Any], external_parent_id: str) -> RawThread
         return None
 
     tpai = node.get("text_post_app_info") or {}
-    # Anything but plain text: images, videos, carousels, link previews (used by the text-only filter).
+    # Images, videos, carousels (used by the text-only filter). Link previews are NOT media: their URL
+    # goes to extra["links"] and is appended to the content.
     has_media = bool(
         node.get("video_versions")
         or node.get("carousel_media")
         or (node.get("image_versions2") or {}).get("candidates")
-        or tpai.get("link_preview_attachment")
         or node.get("media_type") in (1, 2, 8)
     )
     return RawThreadsPost(
@@ -96,6 +96,12 @@ try:  # orjson parses JSON several times faster and with less memory than json
 except ImportError:  # pragma: no cover - optional dependency
     def _loads(raw: str) -> Any:
         return json.loads(raw)
+
+
+def parse_bytes(fn: Any, content: bytes, arg: str) -> list[RawThreadsPost]:
+    """Decode a page body and parse it. Module-level so a worker process can run it: the main
+    process then never decodes or scans the ~1 MB page itself."""
+    return fn(content.decode("utf-8", "replace"), arg)
 
 
 def _sjs_blocks(html: str, marker: str):

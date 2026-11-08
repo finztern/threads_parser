@@ -47,14 +47,16 @@ async def dispatch_posts(
 
     # Optional minimum text length (characters, surrounding whitespace ignored). Checked before the
     # dedup claim and the url check, so short posts cost nothing. 0 = off.
-    # text_only (default on): posts with links, images or videos are dropped, and emoji do not count
-    # towards min_text_length (see scraper/textfilter.py).
+    # text_only (default on): posts with images or videos are dropped. Links are kept and appended to
+    # the content (drop_links: true restores the old behaviour). Emoji and URLs do not count towards
+    # min_text_length (see scraper/textfilter.py).
     min_text_length = int(cfg.get("min_text_length", 0))
     text_only = bool(cfg.get("text_only", True))
+    drop_links = bool(cfg.get("drop_links", False))
     candidates = []
     too_short = non_text = 0
     for p in fresh:
-        reason = skip_reason(p, min_text_length, text_only)
+        reason = skip_reason(p, min_text_length, text_only, drop_links)
         if reason == "non_text":
             non_text += 1
         elif reason == "too_short":

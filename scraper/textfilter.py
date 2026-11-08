@@ -1,5 +1,6 @@
-"""Text-only filter: the collector wants plain text. Posts with links, images, videos (or link
-previews) are dropped, emoji do not count towards the minimum length.
+"""Text-only filter: the collector wants text. Posts with images or videos are dropped. Posts with
+links are KEPT (Exorde wants every outgoing link inside the content, see build_payload). Emoji and
+URLs do not count towards the minimum length.
 """
 from __future__ import annotations
 
@@ -16,18 +17,23 @@ _EMOJI_RE = re.compile(
     "⁉‼™ℹ〰〽㊗㊙©®︎️‍⃣]"
 )
 _SPACE_RE = re.compile(r"\s+")
+_URL_STRIP_RE = re.compile(r"(?i)(?:https?://|www\.)\S+")
 
 
 def plain_length(text: str) -> int:
-    """Characters left after removing emoji and collapsing whitespace."""
-    return len(_SPACE_RE.sub(" ", _EMOJI_RE.sub("", text or "")).strip())
+    """Characters left after removing URLs and emoji and collapsing whitespace."""
+    return len(_SPACE_RE.sub(" ", _EMOJI_RE.sub("", _URL_STRIP_RE.sub("", text or ""))).strip())
 
 
-def skip_reason(post: RawThreadsPost, min_len: int, text_only: bool = True) -> str:
-    """"" = send it, "non_text" = has a link/image/video, "too_short" = not enough plain characters."""
+def skip_reason(post: RawThreadsPost, min_len: int, text_only: bool = True, drop_links: bool = False) -> str:
+    """"" = send it, "non_text" = has an image/video (or a link when drop_links), "too_short" = not
+    enough plain characters.
+    """
     content = post.content or ""
     extra = post.extra or {}
-    if text_only and (extra.get("has_media") or extra.get("links") or _URL_RE.search(content)):
+    if text_only and extra.get("has_media"):
+        return "non_text"
+    if drop_links and (extra.get("links") or _URL_RE.search(content)):
         return "non_text"
     if min_len > 0 and plain_length(content) < min_len:
         return "too_short"

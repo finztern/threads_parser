@@ -182,6 +182,9 @@ async def http_runner(
     totals: Counter[str] = Counter()
     timing: Counter[str] = Counter()
     live: set[asyncio.Task] = set()  # all jobs still running, from this and earlier cycles
+    # Set whenever a job finishes. Waiting on this is O(1) per completion; asyncio.wait() over
+    # hundreds of live tasks re-registered a callback on every one of them each time (~10% of a core).
+    job_done = asyncio.Event()
     inflight_targets: set[str] = set()  # profiles being fetched right now (never started twice)
     inflight_hot: set[str] = set()  # post pks being fetched right now
 
@@ -198,6 +201,7 @@ async def http_runner(
 
         def done(t: asyncio.Task) -> None:
             live.discard(t)
+            job_done.set()
             if not t.cancelled():
                 t.exception()  # mark retrieved; jobs log their own errors
 
@@ -369,7 +373,8 @@ async def http_runner(
                 # cycle_overlap_ratio of the slots) is still in flight; 0 = wait for everything.
                 tail = int(target_slots * max(0.0, float(cfg.get("cycle_overlap_ratio", 0.5))))
                 while len(live) > tail and not stop_event.is_set():
-                    await asyncio.wait(set(live), return_when=asyncio.FIRST_COMPLETED)
+                    job_done.clear()  # no await between the check above and the clear: nothing is missed
+                    await job_done.wait()
                 if hot is not None:
                     hot.expire()
                     hot.save()

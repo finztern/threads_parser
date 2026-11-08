@@ -70,6 +70,9 @@ def validate(item: object) -> str | None:
         return "empty_content"
     if not CREATED_RE.match(item["created_at"]):
         return "created_at_not_utc_z"
+    collected = item.get("collected_at")
+    if collected is not None and not (isinstance(collected, str) and CREATED_RE.match(collected)):
+        return "collected_at_not_utc_z"
     if not item["url"].startswith("https://"):
         return "url_not_https"
     if item["domain"] != DOMAIN:

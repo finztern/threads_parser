@@ -52,6 +52,8 @@ def build_payload(post: RawThreadsPost) -> dict[str, Any]:
     """
     # exorde_data Item accepts only the "...Z" form, not "+00:00".
     created_at_iso = post.created_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Exorde: collected_at must be UTC as well (not local/Paris time), same "...Z" form as created_at.
+    collected_at_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     summary_obj = {
         "platform": "threads",
@@ -69,6 +71,7 @@ def build_payload(post: RawThreadsPost) -> dict[str, Any]:
         "content": content,
         "external_id": post.external_id,
         "created_at": created_at_iso,
+        "collected_at": collected_at_iso,
         "url": post.url,
         "title": "",  # Threads posts have no separate title.
         "author": post.author,

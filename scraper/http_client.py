@@ -19,7 +19,7 @@ from typing import Callable
 
 from curl_cffi.requests import AsyncSession
 
-from scraper.threads_parse import THREADS_BASE_URL, _extract_ssr_feed_posts, _extract_ssr_reply_posts
+from scraper.threads_parse import THREADS_BASE_URL, _extract_ssr_feed_posts, _extract_ssr_reply_posts, parse_bytes
 from scraper.constants import LOGGER
 from scraper.pipeline import RawThreadsPost
 from scraper.proxies import ProxyPool, mask_proxy, transport_options
@@ -94,16 +94,16 @@ class ThreadsHttpClient:
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
 
-    async def _parse(self, fn: Callable[[str, str], list[RawThreadsPost]], html: str, arg: str) -> list[RawThreadsPost]:
+    async def _parse(self, fn: Callable[[str, str], list[RawThreadsPost]], body: bytes, arg: str) -> list[RawThreadsPost]:
         if self._executor is None:
-            return fn(html, arg)
+            return parse_bytes(fn, body, arg)
         try:
-            return await asyncio.get_running_loop().run_in_executor(self._executor, fn, html, arg)
+            return await asyncio.get_running_loop().run_in_executor(self._executor, parse_bytes, fn, body, arg)
         except Exception:
             # Broken worker pool etc.: never lose the page, parse inline.
             LOGGER.exception("parser process failed, parsing inline")
             self.stats["parse_fallback"] += 1
-            return fn(html, arg)
+            return parse_bytes(fn, body, arg)
 
     async def _fetch_parsed(
         self, url: str, parse: Callable[[str, str], list[RawThreadsPost]], arg: str
@@ -168,14 +168,15 @@ class ThreadsHttpClient:
                 self._pool.ban(proxy)
                 last = "failed"
                 continue
-            if status != 200 or "data-sjs" not in response.text:
+            body = response.content
+            if status != 200 or b"data-sjs" not in body:
                 self.stats["bad_page"] += 1
                 self._pool.ban(proxy)
                 last = "failed"
                 continue
 
             self._pool.ok(proxy)
-            items = await self._parse(parse, response.text, arg)
+            items = await self._parse(parse, body, arg)
             if items:
                 return "ok", items
             self.stats["empty_page"] += 1
