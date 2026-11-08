@@ -264,6 +264,7 @@ async def http_runner(
                 totals.clear()
                 stats_before = Counter(client.stats)
                 client.error_kinds.clear()
+                client.status_kinds.clear()
                 # Per-cycle timing (seconds summed over targets) to see where the time goes.
                 timing.clear()
 
@@ -491,6 +492,11 @@ async def http_runner(
                     )
                     if message:
                         LOGGER.info("autotune: %s", message)
+                if client.status_kinds:
+                    LOGGER.info(
+                        "blocked/bad pages by status: %s",
+                        " | ".join(f"{n}x {kind}" for kind, n in client.status_kinds.most_common(6)),
+                    )
                 if client.error_kinds:
                     LOGGER.info(
                         "transport errors by kind: %s",

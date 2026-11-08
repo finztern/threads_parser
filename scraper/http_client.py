@@ -75,6 +75,7 @@ class ThreadsHttpClient:
         self._conn_window: deque[bool] = deque(maxlen=100)  # True = could not connect to the proxy
         self.stats: Counter[str] = Counter()
         self.error_kinds: Counter[str] = Counter()  # normalized transport error messages, per cycle
+        self.status_kinds: Counter[str] = Counter()  # HTTP status / block reason of non-ok pages, per cycle
         self._executor: ProcessPoolExecutor | None = None
         if parse_workers is not None:
             workers = parse_workers if parse_workers > 0 else max(1, min(os.cpu_count() or 2, 4))
@@ -159,17 +160,20 @@ class ThreadsHttpClient:
                 self.stats["not_found"] += 1
                 return "not_found", []
             if status == 429:
+                self.status_kinds["429"] += 1
                 self.stats["blocked"] += 1
                 self._pool.ban(proxy, 300.0)
                 last = "failed"
                 continue
             if status in (401, 403) or status >= 500 or "/login" in str(response.url):
+                self.status_kinds["login" if "/login" in str(response.url) else str(status)] += 1
                 self.stats["blocked"] += 1
                 self._pool.ban(proxy)
                 last = "failed"
                 continue
             body = response.content
             if status != 200 or b"data-sjs" not in body:
+                self.status_kinds[f"bad_page_{status}"] += 1
                 self.stats["bad_page"] += 1
                 self._pool.ban(proxy)
                 last = "failed"
