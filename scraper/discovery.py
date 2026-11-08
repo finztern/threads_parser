@@ -29,6 +29,7 @@ from scraper.constants import LOGGER
 # Threads usernames: letters, digits, '.', '_' (up to 30 chars).
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 RETRY_AFTER_FAILURE_SECONDS = 60.0
+WALL_RETRY_SECONDS = 6 * 3600.0  # login-walled profile: look again much later
 
 
 @dataclass(slots=True)
@@ -216,6 +217,9 @@ class TargetRegistry:
             return
         if label == "failed":
             state.next_due = now + RETRY_AFTER_FAILURE_SECONDS
+            return
+        if label == "walled":
+            state.next_due = now + WALL_RETRY_SECONDS * random.uniform(0.8, 1.2)
             return
 
         state.scrapes += 1

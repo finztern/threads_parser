@@ -336,7 +336,7 @@ async def http_runner(
                     totals["reply_pages"] += 1
                     totals["hot_pages"] += 1
                     first = hot.is_first_fetch(pk)
-                    if label == "not_found":
+                    if label in ("not_found", "walled"):
                         hot.drop(pk)
                         return
                     if label == "failed":

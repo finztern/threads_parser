@@ -113,12 +113,11 @@ class ThreadsHttpClient:
 
         Returns (label, items): "ok" (items found), "empty" (page fine but
         nothing parsed, possibly a transient Threads error), "not_found",
-        or "failed" (proxy/transport/wall problems on every attempt).
+        or "failed" (proxy/transport problems on every attempt), or "walled" (login wall: needs an account).
         """
         last = "failed"
         empties = 0
         kind = "post" if "/post/" in url else "profile"
-        saw_login = False
         for _ in range(self._attempts):
             response = None
             error: Exception | None = None
@@ -167,10 +166,15 @@ class ThreadsHttpClient:
                 self._pool.ban(proxy, 300.0)
                 last = "failed"
                 continue
-            if status in (401, 403) or status >= 500 or "/login" in str(response.url):
-                is_login = "/login" in str(response.url)
-                saw_login = saw_login or is_login
-                self.status_kinds[f"login_{kind}" if is_login else f"{status}_{kind}"] += 1
+            if "/login" in str(response.url):
+                # Measured: no profile that hit the login wall ever opened through another proxy, so
+                # the wall belongs to the page, not to the exit. Do not retry, do not ban the proxy.
+                self._pool.ok(proxy)
+                self.stats["walled"] += 1
+                self.status_kinds[f"login_{kind}"] += 1
+                return "walled", []
+            if status in (401, 403) or status >= 500:
+                self.status_kinds[f"{status}_{kind}"] += 1
                 self.stats["blocked"] += 1
                 self._pool.ban(proxy)
                 last = "failed"
@@ -186,16 +190,12 @@ class ThreadsHttpClient:
             self._pool.ok(proxy)
             items = await self._parse(parse, body, arg)
             if items:
-                if saw_login:
-                    self.status_kinds[f"login_recovered_{kind}"] += 1  # another proxy got through: IP-based
                 return "ok", items
             self.stats["empty_page"] += 1
             last = "empty"  # maybe a transient "Something went wrong"; retry once on another proxy
             empties += 1
             if empties >= 2:  # private / no posts: do not burn more requests on it
                 break
-        if saw_login and last == "failed":
-            self.status_kinds[f"login_final_{kind}"] += 1  # every attempt hit the wall: page-based
         return last, []
 
     async def fetch_profile(self, username: str) -> tuple[str, list[RawThreadsPost]]:
