@@ -495,7 +495,7 @@ async def http_runner(
                 if client.status_kinds:
                     LOGGER.info(
                         "blocked/bad pages by status: %s",
-                        " | ".join(f"{n}x {kind}" for kind, n in client.status_kinds.most_common(6)),
+                        " | ".join(f"{n}x {kind}" for kind, n in client.status_kinds.most_common(12)),
                     )
                 if client.error_kinds:
                     LOGGER.info(
