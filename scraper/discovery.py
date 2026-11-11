@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scraper.constants import LOGGER
+from scraper.jsonfast import dump_bytes
 
 # Threads usernames: letters, digits, '.', '_' (up to 30 chars).
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
@@ -101,7 +102,7 @@ class TargetRegistry:
         try:
             self._file.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+            tmp.write_bytes(dump_bytes(data))
             os.replace(tmp, self._file)
             self._dirty = False
             self._last_saved = time.monotonic()
@@ -172,10 +173,12 @@ class TargetRegistry:
             if t.next_due > now:
                 continue
             (seeds if t.seed else proven if t.fresh_total > 0 else unproven).append((k, t))
-        for group in (seeds, unproven):
-            group.sort(key=lambda kt: kt[1].next_due)
+        # Only the first `limit` of each group can be used: a partial selection (O(n log limit))
+        # instead of sorting tens of thousands of due targets every cycle.
+        seeds = heapq.nsmallest(limit, seeds, key=lambda kt: kt[1].next_due)
+        unproven = heapq.nsmallest(limit, unproven, key=lambda kt: kt[1].next_due)
         # Proven profiles: the ones that recently produced the most NEW items go first.
-        proven.sort(key=lambda kt: (-kt[1].yield_ema, kt[1].next_due))
+        proven = heapq.nsmallest(limit, proven, key=lambda kt: (-kt[1].yield_ema, kt[1].next_due))
 
         batch = [k for k, _ in seeds[:limit]]
         room = limit - len(batch)

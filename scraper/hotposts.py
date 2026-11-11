@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from scraper.constants import LOGGER
+from scraper.jsonfast import dump_bytes
 
 
 def freshness_boost(age_seconds: float) -> float:
@@ -116,7 +117,7 @@ class HotPosts:
         try:
             self._file.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+            tmp.write_bytes(dump_bytes(data))
             os.replace(tmp, self._file)
             self._dirty = False
             self._last_saved = time.monotonic()

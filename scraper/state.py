@@ -12,6 +12,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from scraper.constants import LOGGER
+from scraper.jsonfast import dump_bytes
 
 
 class TokenBucket:
@@ -89,7 +90,7 @@ class SeenCache:
         def write() -> None:
             file.parent.mkdir(parents=True, exist_ok=True)
             tmp = file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(ids, separators=(",", ":")), encoding="utf-8")
+            tmp.write_bytes(dump_bytes(ids))
             os.replace(tmp, file)
 
         try:
