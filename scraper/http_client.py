@@ -19,7 +19,13 @@ from typing import Callable
 
 from curl_cffi.requests import AsyncSession
 
-from scraper.threads_parse import THREADS_BASE_URL, _extract_ssr_feed_posts, _extract_ssr_reply_posts, parse_bytes
+from scraper.threads_parse import (
+    THREADS_BASE_URL,
+    _extract_ssr_feed_posts,
+    _extract_ssr_reply_posts,
+    _extract_ssr_user_replies,
+    parse_bytes,
+)
 from scraper.constants import LOGGER
 from scraper.pipeline import RawThreadsPost
 from scraper.proxies import ProxyPool, mask_proxy, transport_options
@@ -107,7 +113,7 @@ class ThreadsHttpClient:
             return parse_bytes(fn, body, arg)
 
     async def _fetch_parsed(
-        self, url: str, parse: Callable[[str, str], list[RawThreadsPost]], arg: str
+        self, url: str, parse: Callable[[str, str], list[RawThreadsPost]], arg: str, empty_retries: int = 2
     ) -> tuple[str, list[RawThreadsPost]]:
         """GET url through up to `attempts` different proxies.
 
@@ -117,7 +123,7 @@ class ThreadsHttpClient:
         """
         last = "failed"
         empties = 0
-        kind = "post" if "/post/" in url else "profile"
+        kind = "post" if "/post/" in url else "tab" if url.endswith("/replies") else "profile"
         for _ in range(self._attempts):
             response = None
             error: Exception | None = None
@@ -194,12 +200,19 @@ class ThreadsHttpClient:
             self.stats["empty_page"] += 1
             last = "empty"  # maybe a transient "Something went wrong"; retry once on another proxy
             empties += 1
-            if empties >= 2:  # private / no posts: do not burn more requests on it
+            if empties >= empty_retries:  # private / no posts: do not burn more requests on it
                 break
         return last, []
 
     async def fetch_profile(self, username: str) -> tuple[str, list[RawThreadsPost]]:
         return await self._fetch_parsed(f"{THREADS_BASE_URL}/@{username}", _extract_ssr_feed_posts, username)
+
+    async def fetch_user_replies(self, username: str) -> tuple[str, list[RawThreadsPost]]:
+        """Replies written by @username (the "Replies" tab). Nothing found is normal (the user did not
+        reply lately), so an empty page is not retried."""
+        return await self._fetch_parsed(
+            f"{THREADS_BASE_URL}/@{username}/replies", _extract_ssr_user_replies, username, empty_retries=1
+        )
 
     async def fetch_post_replies(
         self, username: str, code: str, post_pk: str

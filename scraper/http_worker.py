@@ -268,8 +268,11 @@ async def http_runner(
                 # Per-cycle timing (seconds summed over targets) to see where the time goes.
                 timing.clear()
 
+                tab_on = bool(cfg.get("replies_tab", True))
+
                 async def job(username: str) -> None:
                     posts: list = []
+                    tab_posts: list = []
                     # The target slot covers only the network part. Dispatch (url-check + POST) runs
                     # after the slot is released, so slow sends never starve fetching.
                     async with sem:
@@ -283,6 +286,15 @@ async def http_runner(
                             )
                             if hot is not None and posts:
                                 hot.observe(posts)
+                            # The user's own replies (Replies tab): by far the best new-per-request source.
+                            if tab_on and label == "ok":
+                                try:
+                                    tab_label, tab_posts = await client.fetch_user_replies(username)
+                                except Exception:
+                                    tab_label, tab_posts = "failed", []
+                                    totals["tab_error"] += 1
+                                totals["tab_pages"] += 1
+                                totals[f"tab_{tab_label}"] += 1
                             timing["fetch"] += time.monotonic() - t_fetch
                             timing["targets"] += 1
                             totals[f"profile_{label}"] += 1
@@ -291,31 +303,41 @@ async def http_runner(
                             now = datetime.now(timezone.utc)
                             own_fresh = sum(
                                 1
-                                for p in posts
+                                for p in posts + tab_posts
                                 if p.username.lower() == username.lower()
                                 and (now - p.created_at.astimezone(timezone.utc)).total_seconds() <= max_age
                             )
                             registry.report(username, label, own_fresh)
-                            if discovery_on and posts:
-                                totals["discovered"] += registry.observe({p.username for p in posts})
+                            if discovery_on and (posts or tab_posts):
+                                totals["discovered"] += registry.observe({p.username for p in posts + tab_posts})
                         except Exception:
                             totals["profile_error"] += 1
                             registry.report(username, "failed", 0)
                             LOGGER.exception("target @%s failed", username)
                             return
 
-                    if not posts:
+                    if not posts and not tab_posts:
                         return
                     try:
                         t_wait = time.monotonic()
                         async with dispatch_sem:
                             timing["dispatch_wait"] += time.monotonic() - t_wait
                             t_run = time.monotonic()
-                            result = await dispatch_posts(posts, cfg, store_client, token_bucket, seen_cache)
-                            totals.update(result)
-                            # Items new to Exorde (rate-limited ones were new too) = this target's yield.
-                            registry.report_yield(username, result["to_send"] + result["rate_limited"])
-                            totals["profile_new"] += result["to_send"] + result["rate_limited"]
+                            new_items = 0
+                            if posts:
+                                result = await dispatch_posts(posts, cfg, store_client, token_bucket, seen_cache)
+                                totals.update(result)
+                                # Items new to Exorde (rate-limited ones were new too) = this target's yield.
+                                new_items += result["to_send"] + result["rate_limited"]
+                                totals["profile_new"] += result["to_send"] + result["rate_limited"]
+                            if tab_posts:
+                                result = await dispatch_posts(tab_posts, cfg, store_client, token_bucket, seen_cache)
+                                totals.update(result)
+                                tab_new = result["to_send"] + result["rate_limited"]
+                                new_items += tab_new
+                                totals["tab_new"] += tab_new
+                                totals["tab_fresh"] += result["fresh"]
+                            registry.report_yield(username, new_items)
                             timing["dispatch_run"] += time.monotonic() - t_run
                             timing["dispatches"] += 1
                     except Exception:
@@ -418,6 +440,20 @@ async def http_runner(
                     totals["sent"] / max(time.monotonic() - cycle_start, 0.001),
                     delta.get("requests", 0) / max(time.monotonic() - cycle_start, 0.001),
                 )
+                LOGGER.info(
+                    "replies tab: pages=%d (ok=%d empty=%d failed=%d walled=%d) fresh=%d new=%d = %.2f new/page",
+                    totals["tab_pages"],
+                    totals["tab_ok"],
+                    totals["tab_empty"],
+                    totals["tab_failed"] + totals["tab_error"],
+                    totals["tab_walled"],
+                    totals["tab_fresh"],
+                    totals["tab_new"],
+                    totals["tab_new"] / max(totals["tab_pages"], 1),
+                )
+                # Replies from the Replies tab are reported on their own line above, not as post-page replies.
+                sent_replies_pages = totals["sent_replies"] - totals["tab_new"]
+                fresh_replies_pages = totals["fresh_replies"] - totals["tab_fresh"]
                 sent_top = totals["sent"] - totals["sent_replies"]
                 fresh_top = totals["fresh"] - totals["fresh_replies"]
                 LOGGER.info(
@@ -428,11 +464,11 @@ async def http_runner(
                     100.0 * sent_top / max(fresh_top, 1),
                     len(batch),
                     sent_top / max(len(batch), 1),
-                    totals["fresh_replies"],
-                    totals["sent_replies"],
-                    100.0 * totals["sent_replies"] / max(totals["fresh_replies"], 1),
+                    fresh_replies_pages,
+                    sent_replies_pages,
+                    100.0 * sent_replies_pages / max(fresh_replies_pages, 1),
                     totals["reply_pages"],
-                    totals["sent_replies"] / max(totals["reply_pages"], 1),
+                    sent_replies_pages / max(totals["reply_pages"], 1),
                     totals["url_unverified"],
                     totals["too_short"],
                     totals["non_text"],
@@ -470,8 +506,8 @@ async def http_runner(
                 )
                 if budget is not None:
                     message = budget.update(
-                        len(batch),
-                        totals["profile_new"],
+                        len(batch) + totals["tab_pages"],
+                        totals["profile_new"] + totals["tab_new"],
                         totals["hot_first_new"],
                         totals["hot_again_pages"],
                         totals["hot_again_new"],

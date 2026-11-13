@@ -141,6 +141,53 @@ def _walk_thread_nodes(obj: Any):
             yield from _walk_thread_nodes(value)
 
 
+def _author_of(post: dict[str, Any]) -> str:
+    return str((post.get("user") or {}).get("username") or "").lower()
+
+
+def _reply_to_name(tpai: dict[str, Any]) -> str:
+    """Username of the author this post replies to, as Threads states it ("" if not given)."""
+    value = tpai.get("reply_to_author")
+    if isinstance(value, dict):
+        value = value.get("username")
+    return value.lower() if isinstance(value, str) else ""
+
+
+def _extract_ssr_user_replies(html: str, username: str) -> list[RawThreadsPost]:
+    """Replies written BY @username, from the "Replies" tab page (/@username/replies).
+
+    Threads renders every reply as a thread node [parent post, the reply]: the post shown right
+    above the reply is the one it answers, so its pk is the real external_parent_id (nothing is
+    invented). Where Threads also names the replied-to author (reply_to_author) it must match the
+    author of that parent item, otherwise the reply is skipped. A reply without a parent item in the
+    node is skipped too (Exorde needs the real parent id).
+    """
+    posts: dict[str, RawThreadsPost] = {}
+    wanted = username.lower()
+    for raw in _sjs_blocks(html, "thread_items"):
+        try:
+            data = _loads(raw)
+        except ValueError:
+            continue
+        for node in _walk_thread_nodes(data):
+            items = [(i or {}).get("post") or {} for i in node["thread_items"]]
+            for index, post in enumerate(items):
+                tpai = post.get("text_post_app_info") or {}
+                if _author_of(post) != wanted or not tpai.get("is_reply") or index == 0:
+                    continue
+                parent = items[index - 1]
+                parent_pk = parent.get("pk")
+                if not parent_pk:
+                    continue
+                named = _reply_to_name(tpai)
+                if named and named != _author_of(parent):
+                    continue
+                parsed = _parse_post_node(post, external_parent_id=str(parent_pk))
+                if parsed:
+                    posts[parsed.external_id] = parsed
+    return list(posts.values())
+
+
 def _extract_ssr_feed_posts(html: str, username: str) -> list[RawThreadsPost]:
     """Top-level posts of @username embedded in the profile page HTML.
 
