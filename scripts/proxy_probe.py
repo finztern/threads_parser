@@ -6,7 +6,7 @@ per protocol so you can see whether the list is better than Tor.
 
 Usage (inside the container; the list file must NOT be committed):
   docker compose cp ~/proxies.txt parser:/tmp/proxies.txt
-  docker compose exec parser python3 scripts/proxy_probe.py /tmp/proxies.txt [max_proxies=200] [user=zuck]
+  docker compose exec parser python3 scripts/proxy_probe.py /tmp/proxies.txt [max_proxies=200] [user=zuck] [out_file]
 Lines: scheme://host:port or scheme://user:pass@host:port (http, socks4, socks5); '#' comments allowed.
 """
 from __future__ import annotations
@@ -52,7 +52,7 @@ async def probe(proxy: str, url: str, sem: asyncio.Semaphore) -> tuple[str, str,
         return proxy, kind, time.monotonic() - started
 
 
-async def main(path: str, limit: int, user: str) -> None:
+async def main(path: str, limit: int, user: str, out: str = "") -> None:
     proxies = load(path, limit)
     url = f"https://www.threads.com/@{user}/replies"
     sem = asyncio.Semaphore(30)
@@ -68,10 +68,13 @@ async def main(path: str, limit: int, user: str) -> None:
     print(f"TOTAL: {dict(total.most_common())}")
     if ok_times:
         print(f"ok latency: median {ok_times[len(ok_times) // 2]:.1f}s, max {ok_times[-1]:.1f}s")
+    if out:
+        Path(out).write_text("\n".join(p for p, kind, _ in results if kind == "ok") + "\n", encoding="utf-8")
+        print(f"working proxies written to {out}")
     print(f"working share: {100.0 * total['ok'] / max(len(results), 1):.0f}%")
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit(__doc__)
-    asyncio.run(main(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 200, sys.argv[3] if len(sys.argv) > 3 else "zuck"))
+    asyncio.run(main(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 200, sys.argv[3] if len(sys.argv) > 3 else "zuck", sys.argv[4] if len(sys.argv) > 4 else ""))

@@ -22,6 +22,7 @@ from scraper.budget import AutoBudget
 from scraper.hotposts import HotPosts
 from scraper.http_client import ReplyTracker, ThreadsHttpClient, make_url_check_poster
 from scraper.proxies import ProxyPool
+from scraper.mixed_pool import MixedPool
 from scraper.shard import make_owner
 from scraper.ipv6_pool import Ipv6Pool
 from scraper.tor_pool import TorPool
@@ -75,6 +76,16 @@ async def http_runner(
             # Tor mode: proxies.txt is not used; every request gets its own circuit (see tor_pool.py).
             pool = TorPool(os.getenv("TOR_HOST", "tor"), int(os.getenv("TOR_BASE_PORT", "9050")), tor_instances,
                            circuit_reuse=int(cfg.get("tor_circuit_reuse", 1)))
+            # Optional static proxies next to Tor (proxies.txt, a secret): a share of the requests goes through them.
+            static_share = float(cfg.get("static_proxy_share", 0.0))
+            proxies_path = _resolve(cfg.get("proxies_file", "proxies.txt"))
+            if static_share > 0 and proxies_path.is_file():
+                try:
+                    static_pool = ProxyPool.from_file(proxies_path, cooldown_seconds=cfg.get("proxy_cooldown_seconds", 120))
+                    pool = MixedPool(pool, static_pool, static_share)
+                    LOGGER.info("http mode: +%d static proxies, %.0f%% of requests", len(static_pool), 100 * static_share)
+                except ValueError:
+                    LOGGER.warning("static proxies requested but %s has no usable lines; Tor only", proxies_path)
         else:
             pool = ProxyPool.from_file(
                 _resolve(cfg.get("proxies_file", "proxies.txt")),

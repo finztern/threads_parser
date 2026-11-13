@@ -20,6 +20,8 @@ http_concurrency_max: 200
 # Tries per page, each through a different proxy.
 # Global cap on HTTP requests per second (0 = off). Threads limits requests per IP; a lower rate keeps the exits from burning.
 max_requests_per_second: 0
+# Tor mode only: share of requests sent through the static proxies of proxies.txt (0 = Tor only).
+static_proxy_share: 0.4
 http_attempts: 3
 http_timeout_seconds: 20
 # A proxy that failed/was blocked is skipped for this long.
