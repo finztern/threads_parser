@@ -148,6 +148,8 @@ class ThreadsHttpClient:
             async with self._req_sem:
                 proxy = self._pool.next()  # pick the proxy once the slot is free (fresh ban state)
                 self.stats["requests"] += 1
+                src = self._pool.source(proxy) if hasattr(self._pool, "source") else "pool"
+                self.stats[f"src_{src}_requests"] += 1
                 try:
                     session_opts, request_opts = transport_options(proxy)
                     async with AsyncSession(impersonate=self._impersonate, timeout=self._timeout, **session_opts) as session:
@@ -162,9 +164,11 @@ class ThreadsHttpClient:
                 if "timed out" in str(exc).lower() or "timeout" in str(exc).lower():
                     # Slow, not necessarily dead (overloaded link / our own concurrency): short pause.
                     self.stats["timeouts"] += 1
+                    self.stats[f"src_{src}_timeout"] += 1
                     self._pool.ban(proxy, 60.0)
                 else:
                     self.stats["conn_errors"] += 1
+                    self.stats[f"src_{src}_error"] += 1
                     self._conn_window.append(True)
                     if self._local_trouble():
                         # Most attempts cannot connect at all: our side (fds, conntrack, provider
@@ -185,6 +189,7 @@ class ThreadsHttpClient:
                 return "not_found", []
             if status == 429:
                 self.status_kinds[f"429_{kind}"] += 1
+                self.stats[f"src_{src}_429"] += 1
                 self.stats["blocked"] += 1
                 self._pool.ban(proxy, 300.0)
                 last = "failed"
@@ -211,6 +216,7 @@ class ThreadsHttpClient:
                 continue
 
             self._pool.ok(proxy)
+            self.stats[f"src_{src}_ok"] += 1
             items = await self._parse(parse, body, arg)
             if items:
                 return "ok", items

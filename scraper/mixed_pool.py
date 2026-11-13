@@ -31,6 +31,9 @@ class MixedPool:
             return self._static.next()
         return self._tor.next()
 
+    def source(self, proxy: str) -> str:
+        return "static" if proxy in self._static_set else "tor"
+
     def _owner(self, proxy: str):
         return self._static if proxy in self._static_set else self._tor
 

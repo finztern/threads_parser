@@ -261,6 +261,8 @@ async def http_runner(
                     tune.update(conc=cfg_conc, cfg_conc=cfg_conc, prev_conc=None, hold=0)
                 concurrency = tune["conc"] if autotune else cfg_conc
                 client.set_concurrency(concurrency)
+                if isinstance(pool, MixedPool):
+                    pool.set_share(float(cfg.get("static_proxy_share", 0.0)))  # hot-reloaded from config.yaml
                 client.set_max_rps(float(cfg.get("max_requests_per_second", 0)))
                 target_slots = max(concurrency, int(concurrency * float(cfg.get("target_concurrency_factor", 1.5))))
                 sem = asyncio.Semaphore(target_slots)
@@ -431,6 +433,17 @@ async def http_runner(
 
                 delta = {k: client.stats[k] - stats_before[k] for k in client.stats}
                 rs = registry.stats()
+                if isinstance(pool, MixedPool):
+                    parts = []
+                    for src in ("tor", "static"):
+                        parts.append(
+                            "%s req=%d ok=%d 429=%d timeout=%d err=%d" % (
+                                src, delta.get(f"src_{src}_requests", 0), delta.get(f"src_{src}_ok", 0),
+                                delta.get(f"src_{src}_429", 0), delta.get(f"src_{src}_timeout", 0),
+                                delta.get(f"src_{src}_error", 0),
+                            )
+                        )
+                    LOGGER.info("by source: %s", " | ".join(parts))
                 LOGGER.info(
                     "http cycle: scraped=%d ok=%d empty=%d not_found=%d failed=%d | requests=%d "
                     "blocked=%d transport_err=%d(timeout=%d) proxies_ok=%d/%d reply_pages=%d | known=%d (+%d new) "
