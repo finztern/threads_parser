@@ -250,6 +250,7 @@ async def http_runner(
                     tune.update(conc=cfg_conc, cfg_conc=cfg_conc, prev_conc=None, hold=0)
                 concurrency = tune["conc"] if autotune else cfg_conc
                 client.set_concurrency(concurrency)
+                client.set_max_rps(float(cfg.get("max_requests_per_second", 0)))
                 target_slots = max(concurrency, int(concurrency * float(cfg.get("target_concurrency_factor", 1.5))))
                 sem = asyncio.Semaphore(target_slots)
                 # Many tiny concurrent POSTs (url-check + store_items) starve the httpx pool and the

@@ -9,6 +9,7 @@ in scraper/threads_parse.py (nothing is invented).
 from __future__ import annotations
 
 import asyncio
+import time
 import multiprocessing
 import os
 import re
@@ -78,6 +79,8 @@ class ThreadsHttpClient:
         self._impersonate = impersonate
         self._error_cooldown = error_cooldown
         self._req_sem = asyncio.Semaphore(max(1, int(concurrency)))
+        self._max_rps = 0.0  # 0 = no cap
+        self._next_slot = 0.0
         self._conn_window: deque[bool] = deque(maxlen=100)  # True = could not connect to the proxy
         self.stats: Counter[str] = Counter()
         self.error_kinds: Counter[str] = Counter()  # normalized transport error messages, per cycle
@@ -112,6 +115,19 @@ class ThreadsHttpClient:
             self.stats["parse_fallback"] += 1
             return parse_bytes(fn, body, arg)
 
+    def set_max_rps(self, rps: float) -> None:
+        """Global cap on HTTP requests per second (0 = off); keeps the per-IP 429 limits from being burned."""
+        self._max_rps = max(0.0, float(rps))
+
+    async def _pace(self) -> None:
+        if self._max_rps <= 0:
+            return
+        now = time.monotonic()
+        slot = max(now, self._next_slot)
+        self._next_slot = slot + 1.0 / self._max_rps
+        if slot > now:
+            await asyncio.sleep(slot - now)
+
     async def _fetch_parsed(
         self, url: str, parse: Callable[[str, str], list[RawThreadsPost]], arg: str, empty_retries: int = 2
     ) -> tuple[str, list[RawThreadsPost]]:
@@ -127,6 +143,7 @@ class ThreadsHttpClient:
         for _ in range(self._attempts):
             response = None
             error: Exception | None = None
+            await self._pace()
             # The slot is held only for the network round trip, not for parsing.
             async with self._req_sem:
                 proxy = self._pool.next()  # pick the proxy once the slot is free (fresh ban state)

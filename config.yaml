@@ -18,6 +18,8 @@ http_concurrency: 150
 http_concurrency_min: 100
 http_concurrency_max: 200
 # Tries per page, each through a different proxy.
+# Global cap on HTTP requests per second (0 = off). Threads limits requests per IP; a lower rate keeps the exits from burning.
+max_requests_per_second: 0
 http_attempts: 3
 http_timeout_seconds: 20
 # A proxy that failed/was blocked is skipped for this long.
