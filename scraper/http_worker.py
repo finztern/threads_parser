@@ -269,6 +269,8 @@ async def http_runner(
                 timing.clear()
 
                 tab_on = bool(cfg.get("replies_tab", True))
+                # Share of targets that also get the profile page; the rest only get the Replies tab.
+                profile_ratio = min(1.0, max(0.0, float(cfg.get("profile_page_ratio", 0.2))))
 
                 async def job(username: str) -> None:
                     posts: list = []
@@ -281,13 +283,19 @@ async def http_runner(
                         try:
                             t_fetch = time.monotonic()
                             # With hot posts on, reply pages are fetched by hot_job, not here.
-                            label, posts, reply_pages = await client.fetch_target(
-                                username, tracker, reply_max_age, fetch_replies and hot is None, reply_min_growth
-                            )
-                            if hot is not None and posts:
-                                hot.observe(posts)
+                            reply_pages = 0
+                            with_profile = (not tab_on) or hot is None or random.random() < profile_ratio
+                            if with_profile or not tab_on:
+                                totals["profile_pages"] += 1
+                                label, posts, reply_pages = await client.fetch_target(
+                                    username, tracker, reply_max_age, fetch_replies and hot is None, reply_min_growth
+                                )
+                                if hot is not None and posts:
+                                    hot.observe(posts)
+                            else:
+                                label = ""
                             # The user's own replies (Replies tab): by far the best new-per-request source.
-                            if tab_on and label == "ok":
+                            if tab_on and label in ("ok", ""):
                                 try:
                                     tab_label, tab_posts = await client.fetch_user_replies(username)
                                 except Exception:
@@ -295,6 +303,9 @@ async def http_runner(
                                     totals["tab_error"] += 1
                                 totals["tab_pages"] += 1
                                 totals[f"tab_{tab_label}"] += 1
+                                if label == "":
+                                    # Tab-only: an empty tab is a normal profile, not a dead one.
+                                    label = "ok" if tab_label == "empty" else tab_label
                             timing["fetch"] += time.monotonic() - t_fetch
                             timing["targets"] += 1
                             totals[f"profile_{label}"] += 1
@@ -462,8 +473,8 @@ async def http_runner(
                     fresh_top,
                     sent_top,
                     100.0 * sent_top / max(fresh_top, 1),
-                    len(batch),
-                    sent_top / max(len(batch), 1),
+                    totals["profile_pages"],
+                    sent_top / max(totals["profile_pages"], 1),
                     fresh_replies_pages,
                     sent_replies_pages,
                     100.0 * sent_replies_pages / max(fresh_replies_pages, 1),
@@ -506,7 +517,7 @@ async def http_runner(
                 )
                 if budget is not None:
                     message = budget.update(
-                        len(batch) + totals["tab_pages"],
+                        totals["profile_pages"] + totals["tab_pages"],
                         totals["profile_new"] + totals["tab_new"],
                         totals["hot_first_new"],
                         totals["hot_again_pages"],

@@ -101,3 +101,5 @@ hot_posts_per_cycle: 1800
 hot_base_interval_seconds: 300
 # For every ok profile also open /@user/replies (the user's own replies: ~3 new comments per page).
 replies_tab: true
+# Share of targets that also open the profile page; the rest only open the Replies tab (1.0 = old behaviour).
+profile_page_ratio: 0.2
