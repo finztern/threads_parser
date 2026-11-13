@@ -50,6 +50,10 @@ class ConfigStore:
         raw.setdefault("domain", DOMAIN)
         # Env override for store_endpoint, useful in docker-compose.
         raw["store_endpoint"] = normalize_store_endpoints(os.getenv("STORE_ENDPOINT", raw["store_endpoint"]))
+        # Same for the url-check API: set URL_CHECK_ENDPOINT in .env (e.g. the mock collector's /v1/check)
+        # so a `git checkout config.yaml` can never silently switch it back.
+        if os.getenv("URL_CHECK_ENDPOINT"):
+            raw["url_check_endpoint"] = os.environ["URL_CHECK_ENDPOINT"]
         with self._lock:
             self._data = raw
             self._mtime = self._path.stat().st_mtime

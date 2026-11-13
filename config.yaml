@@ -14,6 +14,9 @@ proxies_file: "proxies.txt"
 targets_file: "targets.txt"
 # Parallel requests (each one through its own proxy). Raise while RAM/CPU allow.
 http_concurrency: 150
+# Autotune keeps the real concurrency inside this range (measured: 200 is the plateau, 250+ gives nothing).
+http_concurrency_min: 100
+http_concurrency_max: 200
 # Tries per page, each through a different proxy.
 http_attempts: 3
 http_timeout_seconds: 20
@@ -38,11 +41,11 @@ reply_post_max_age_seconds: 259200
 discovery:
   enabled: true
   state_file: "data/targets_state.json"
-  min_interval_seconds: 300
+  min_interval_seconds: 120
   max_interval_seconds: 21600
-  max_targets_per_cycle: 1500
+  max_targets_per_cycle: 3500
   # Share of every batch reserved for never-scraped profiles (rest: known-active ones).
-  explore_ratio: 0.3
+  explore_ratio: 0.5
   max_known_targets: 200000
 
 # Overall rate of items leaving the process towards store_items,
@@ -89,3 +92,10 @@ targets:
   - {type: "profile", value: "selenagomez"}
   - {type: "profile", value: "nasa"}
   - {type: "profile", value: "netflix"}
+
+# Budget between profile pages and hot post pages is tuned by itself (data/budget.json).
+auto_budget: true
+hot_posts_per_cycle: 1800
+hot_base_interval_seconds: 300
+# For every ok profile also open /@user/replies (the user's own replies: ~3 new comments per page).
+replies_tab: true
