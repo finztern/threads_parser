@@ -50,7 +50,7 @@ async def dispatch_posts(
     # text_only (default on): posts with images or videos are dropped. Links are kept and appended to
     # the content (drop_links: true restores the old behaviour). Emoji and URLs do not count towards
     # min_text_length (see scraper/textfilter.py).
-    min_text_length = int(cfg.get("min_text_length", 0))
+    min_text_length = int(cfg.get("min_text_length", 7))
     text_only = bool(cfg.get("text_only", True))
     drop_links = bool(cfg.get("drop_links", False))
     candidates = []

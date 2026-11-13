@@ -30,6 +30,8 @@ parse_workers: 1
 # Posts with images/videos are dropped; links are kept and appended to content as " --http://...".
 # drop_links: true restores dropping posts that contain links.
 text_only: true
+# Minimum plain characters (emoji and URLs do not count). The collector skips shorter texts.
+min_text_length: 7
 drop_links: false
 # Open a post page for replies only if the post is younger than this AND its
 # reply count grew since we last looked.
