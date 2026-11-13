@@ -23,13 +23,14 @@ class AutoBudget:
         profiles: int,
         hot: int,
         base_interval: float,
-        profiles_bounds: tuple[int, int] = (500, 6000),
-        hot_bounds: tuple[int, int] = (300, 4000),
+        profiles_bounds: tuple[int, int] = (500, 9000),
+        hot_bounds: tuple[int, int] = (100, 4000),
         interval_bounds: tuple[float, float] = (300.0, 3600.0),
         step: float = 0.5,
         min_requests: int = 100,
         trial_cycles: int = 5,
         margin: float = 0.04,
+        direction: int = 1,
     ) -> None:
         self._file = state_file
         self.profiles = profiles
@@ -43,7 +44,7 @@ class AutoBudget:
         self._margin = margin
         self._ema_repeat: float | None = None
         self._warmup = 1  # the first cycle after a start is not representative
-        self._direction = 1  # +1: move budget from profiles to hot pages, -1: back
+        self._direction = 1 if direction >= 0 else -1  # +1: move budget from profiles to hot pages, -1: back
         self._phase = "base"  # "base": measuring the current point, "trial": measuring a shifted point
         self._rates: list[float] = []
         self._skip = 0  # cycles to ignore after a change (the pipeline is still refilling)

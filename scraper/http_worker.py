@@ -146,6 +146,8 @@ async def http_runner(
             profiles=int((cfg.get("discovery", {}) or {}).get("max_targets_per_cycle", 1500)),
             hot=int(cfg.get("hot_posts_per_cycle", 2000)),
             base_interval=float(cfg.get("hot_base_interval_seconds", 300)),
+            # With the Replies tab, profile targets pay far more than hot post pages: start by moving budget to targets.
+            direction=-1 if cfg.get("replies_tab", True) else 1,
         )
         budget.load()
 
