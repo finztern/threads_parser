@@ -93,30 +93,37 @@ async def main() -> None:
         sys.exit("xray binary not found")
     links = await download(args.urls)
     random.shuffle(links)
+    links = links[: args.count * 4]
     nodes, kept = [], []
-    for link in links:
-        if len(nodes) >= args.count:
-            break
-        try:
-            nodes.append(parse_vless(link))
-            kept.append(link)
-        except ValueError:
-            continue
-    if not nodes:
-        sys.exit("no usable vless nodes")
-    try:
-        config = build_xray_config(nodes, BASE_PORT)
-    except Exception as exc:  # noqa: BLE001
-        sys.exit(f"cannot build the xray config: {str(exc)[:100]}")
     with tempfile.TemporaryDirectory() as tmp:
+        # A single bad node makes Xray refuse the whole config: test every candidate on its own first.
+        for link in links:
+            if len(nodes) >= args.count:
+                break
+            try:
+                node = parse_vless(link)
+                one = Path(tmp) / "one.json"
+                one.write_text(json.dumps(build_xray_config([node], BASE_PORT)), encoding="utf-8")
+                check = await asyncio.create_subprocess_exec(
+                    xray, "run", "-test", "-c", str(one),
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                if await check.wait() != 0:
+                    continue
+            except Exception:  # noqa: BLE001 - unsupported node: skip it
+                continue
+            nodes.append(node)
+            kept.append(link)
+        print(f"{len(nodes)} nodes accepted by xray (of {len(links)} links)")
+        if not nodes:
+            sys.exit("no usable vless nodes")
         path = Path(tmp) / "xray.json"
-        path.write_text(json.dumps(config), encoding="utf-8")
+        path.write_text(json.dumps(build_xray_config(nodes, BASE_PORT)), encoding="utf-8")
         proc = await asyncio.create_subprocess_exec(xray, "run", "-c", str(path),
-                                                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         await asyncio.sleep(3)
         if proc.returncode is not None:
-            err = (await proc.stderr.read()).decode("utf-8", "ignore")[:300]
-            sys.exit(f"xray exited: {err}")
+            out = (await proc.stdout.read()).decode("utf-8", "ignore")[:600]
+            sys.exit(f"xray exited ({proc.returncode}): {out}")
         try:
             sem = asyncio.Semaphore(20)
             results = await asyncio.gather(*(probe(BASE_PORT + i, sem) for i in range(len(nodes))))
