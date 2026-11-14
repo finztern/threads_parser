@@ -21,7 +21,7 @@ http_concurrency_max: 200
 # Global cap on HTTP requests per second (0 = off). Threads limits requests per IP; a lower rate keeps the exits from burning.
 max_requests_per_second: 0
 # Tor mode only: share of requests sent through the static proxies of proxies.txt (0 = Tor only).
-static_proxy_share: 0.4
+static_proxy_share: 0.7
 # Free proxy lists ("scheme|url", the lists hold host:port): the parser downloads them, probes every candidate
 # with one small request and keeps the fast ones, refreshed every proxy_refresh_minutes. Needs static_proxy_share > 0.
 proxy_sources:
