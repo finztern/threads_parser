@@ -79,7 +79,11 @@ async def http_runner(
             # Optional static proxies next to Tor (proxies.txt, a secret): a share of the requests goes through them.
             static_share = float(cfg.get("static_proxy_share", 0.0))
             proxies_path = _resolve(cfg.get("proxies_file", "proxies.txt"))
-            if static_share > 0 and proxies_path.is_file():
+            if static_share > 0 and cfg.get("proxy_sources"):
+                # Free public lists: the harvester fills the static list in the background (see proxy_harvest.py).
+                pool = MixedPool(pool, None, static_share, cooldown=float(cfg.get("proxy_cooldown_seconds", 120)))
+                LOGGER.info("http mode: Tor + harvested free proxies, %.0f%% of requests once the first harvest is done", 100 * static_share)
+            elif static_share > 0 and proxies_path.is_file():
                 try:
                     static_pool = ProxyPool.from_file(proxies_path, cooldown_seconds=cfg.get("proxy_cooldown_seconds", 120))
                     pool = MixedPool(pool, static_pool, static_share)
@@ -185,6 +189,7 @@ async def http_runner(
     loop_lag = {"max": 0.0}
     tune: dict = {"conc": None, "cfg_conc": None, "prev_conc": None, "prev_rps": 0.0, "hold": 0}
     lag_task = asyncio.create_task(_lag_monitor(loop_lag))
+    harvest_task = asyncio.create_task(_harvest_loop(pool, config_store, stop_event)) if isinstance(pool, MixedPool) else None
     profile_task = None
     if float(os.getenv("PROFILE_SECONDS", "0") or 0) > 0:
         from scraper.profiling import profile_main_thread
@@ -590,6 +595,8 @@ async def http_runner(
             if profile_task is not None:
                 profile_task.cancel()
             lag_task.cancel()
+            if harvest_task is not None:
+                harvest_task.cancel()
             set_url_check_poster(None)
             if vpn is not None:
                 await vpn.close()
@@ -646,6 +653,24 @@ def _autotune(tune: dict, lo: int, hi: int, rps: float, block_ratio: float, ok_r
         tune.update(prev_conc=conc, prev_rps=rps, conc=min(hi, int(conc * 1.15) + 1))
         return f"raising {conc} -> {tune['conc']} (blocked={block_ratio:.1%} proxies_ok={ok_ratio:.0%}, {rps:.0f} req/s)"
     return None
+
+
+async def _harvest_loop(pool: MixedPool, config_store: ConfigStore, stop_event: asyncio.Event) -> None:
+    """Refresh the free-proxy list every `proxy_refresh_minutes` (config is re-read each time)."""
+    from scraper.proxy_harvest import harvest
+
+    while not stop_event.is_set():
+        cfg = config_store.get()
+        try:
+            if cfg.get("proxy_sources"):
+                found = await harvest(cfg)
+                if found:
+                    pool.update_static(found)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("proxy harvest failed")
+        await _sleep(stop_event, max(5.0, float(cfg.get("proxy_refresh_minutes", 30))) * 60)
 
 
 async def _lag_monitor(lag: dict[str, float]) -> None:
