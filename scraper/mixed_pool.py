@@ -44,6 +44,12 @@ class MixedPool:
             return self._static.next()
         return self._tor.next()
 
+    def next_retry(self) -> str:
+        """A retry after a failed attempt: static proxies are much cleaner than Tor exits, so prefer them."""
+        if self._static and self._static.available() > 0 and random.random() < max(self._share, 0.8):
+            return self._static.next()
+        return self._tor.next()
+
     def source(self, proxy: str) -> str:
         return "static" if proxy in self._static_set else "tor"
 

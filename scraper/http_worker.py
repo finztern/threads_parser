@@ -118,6 +118,7 @@ async def http_runner(
         parse_workers=cfg.get("parse_workers"),
         error_cooldown=cfg.get("proxy_error_cooldown_seconds", 600),
         concurrency=int(cfg.get("http_concurrency", 30)),
+        static_timeout=float(cfg.get("static_timeout_seconds", 12)),
     )
     tracker = ReplyTracker()
 

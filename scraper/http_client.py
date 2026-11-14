@@ -67,6 +67,7 @@ class ThreadsHttpClient:
         parse_workers: int | None = 0,
         error_cooldown: float = 600.0,
         concurrency: int = 30,
+        static_timeout: float = 0.0,
     ) -> None:
         """parse_workers: >0 that many parser processes, 0 = auto, None = parse
         inline in the event loop (tests). Parsing a ~1 MB page is CPU work, so at
@@ -75,6 +76,7 @@ class ThreadsHttpClient:
         """
         self._pool = pool
         self._timeout = timeout
+        self._static_timeout = float(static_timeout)  # 0 = same as `timeout`; free proxies must not hold a slot for long
         self._attempts = max(1, attempts)
         self._impersonate = impersonate
         self._error_cooldown = error_cooldown
@@ -140,19 +142,22 @@ class ThreadsHttpClient:
         last = "failed"
         empties = 0
         kind = "post" if "/post/" in url else "tab" if url.endswith("/replies") else "profile"
-        for _ in range(self._attempts):
+        for attempt in range(self._attempts):
             response = None
             error: Exception | None = None
             await self._pace()
             # The slot is held only for the network round trip, not for parsing.
             async with self._req_sem:
-                proxy = self._pool.next()  # pick the proxy once the slot is free (fresh ban state)
+                # After a failed attempt prefer the cleaner source if the pool has one (static proxies see far fewer 429).
+                pick = getattr(self._pool, "next_retry", self._pool.next) if attempt > 0 else self._pool.next
+                proxy = pick()  # pick the proxy once the slot is free (fresh ban state)
                 self.stats["requests"] += 1
                 src = self._pool.source(proxy) if hasattr(self._pool, "source") else "pool"
+                request_timeout = self._static_timeout if (src == "static" and self._static_timeout > 0) else self._timeout
                 self.stats[f"src_{src}_requests"] += 1
                 try:
                     session_opts, request_opts = transport_options(proxy)
-                    async with AsyncSession(impersonate=self._impersonate, timeout=self._timeout, **session_opts) as session:
+                    async with AsyncSession(impersonate=self._impersonate, timeout=request_timeout, **session_opts) as session:
                         response = await session.get(url, headers=HEADERS, allow_redirects=True, **request_opts)
                 except Exception as exc:
                     error = exc
