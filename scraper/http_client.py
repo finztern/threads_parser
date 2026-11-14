@@ -153,7 +153,7 @@ class ThreadsHttpClient:
                 proxy = pick()  # pick the proxy once the slot is free (fresh ban state)
                 self.stats["requests"] += 1
                 src = self._pool.source(proxy) if hasattr(self._pool, "source") else "pool"
-                request_timeout = self._static_timeout if (src == "static" and self._static_timeout > 0) else self._timeout
+                request_timeout = self._static_timeout if (src in ("static", "vpn") and self._static_timeout > 0) else self._timeout
                 self.stats[f"src_{src}_requests"] += 1
                 try:
                     session_opts, request_opts = transport_options(proxy)

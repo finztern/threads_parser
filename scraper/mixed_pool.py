@@ -18,17 +18,21 @@ class MixedPool:
         self._tor = tor
         self._static = static
         self._cooldown = cooldown
+        self._parts: dict[str, list[str]] = {"proxies": list(static._proxies)} if static else {}  # noqa: SLF001
         self._static_set: set[str] = set(static._proxies) if static else set()  # noqa: SLF001 - same package
         self._share = min(1.0, max(0.0, static_share))
 
     def __len__(self) -> int:
         return len(self._tor) + (len(self._static) if self._static else 0)
 
-    def update_static(self, proxies: list[str]) -> None:
-        """Replace the static list (harvester); cool-downs of proxies that stay are kept."""
+    def update_static(self, proxies: list[str], part: str = "proxies") -> None:
+        """Replace one part of the static list ("proxies" = harvested free proxies, "vpn" = local Xray nodes);
+        cool-downs of proxies that stay are kept."""
         if not proxies:
             return
-        fresh = ProxyPool(proxies, self._cooldown)
+        self._parts[part] = list(proxies)
+        combined = list(dict.fromkeys(p for lst in self._parts.values() for p in lst))
+        fresh = ProxyPool(combined, self._cooldown)
         if self._static:
             for proxy in fresh._proxies:  # noqa: SLF001
                 until = self._static._banned_until.get(proxy)  # noqa: SLF001
@@ -51,7 +55,9 @@ class MixedPool:
         return self._tor.next()
 
     def source(self, proxy: str) -> str:
-        return "static" if proxy in self._static_set else "tor"
+        if proxy in self._static_set:
+            return "vpn" if proxy.startswith("socks5h://127.0.0.1:") else "static"
+        return "tor"
 
     def _owner(self, proxy: str):
         return self._static if proxy in self._static_set else self._tor

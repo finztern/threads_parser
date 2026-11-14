@@ -42,6 +42,16 @@ proxy_sources:
   - "socks4|https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks4/data.txt"
   - "socks5|https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt"
 proxy_refresh_minutes: 30
+# Free vless nodes (lists of vless:// links, plain or base64). The parser starts Xray for them, keeps the nodes that
+# open a real Threads page and mixes them into the static pool (needs static_proxy_share > 0). Empty list = off.
+vpn_sources:
+  - "https://github.com/Au1rxx/free-vpn-subscriptions/raw/main/output/v2ray-base64.txt"
+vpn_refresh_minutes: 60
+vpn_candidates: 800
+vpn_nodes: 250
+vpn_keep: 150
+vpn_max_latency_seconds: 6.0
+vpn_base_port: 12000
 proxy_probe_url: "https://www.threads.com/robots.txt"
 proxy_max_latency_seconds: 5.0
 proxy_max_candidates: 15000
