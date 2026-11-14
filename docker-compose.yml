@@ -49,6 +49,9 @@ services:
     profiles: ["mock"]
     build: .
     command: ["python3", "scripts/mock_collector.py"]
+    # Published on the host loopback only: the IPv6 mode runs the parser in the host network.
+    ports:
+      - "127.0.0.1:9000:9000"
     environment:
       MOCK_PORT: "9000"
       MOCK_MIN_LEN: ${MOCK_MIN_LEN:-7}

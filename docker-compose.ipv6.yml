@@ -11,3 +11,5 @@ services:
     environment:
       IPV6_PREFIX: ${IPV6_PREFIX:?set IPV6_PREFIX in .env}
       STORE_ENDPOINT: ${IPV6_STORE_ENDPOINT:-http://127.0.0.1:9000/store_items}
+      # Host network: the container name `collector` does not resolve. With the mock set IPV6_URL_CHECK_ENDPOINT=http://127.0.0.1:9000/v1/check
+      URL_CHECK_ENDPOINT: ${IPV6_URL_CHECK_ENDPOINT:-}
