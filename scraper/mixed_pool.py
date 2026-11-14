@@ -58,12 +58,16 @@ class MixedPool:
 
     def ban(self, proxy: str, seconds: float | None = None) -> None:
         if proxy in self._static_set:
-            # A free proxy that timed out or got 429 is not worth retrying soon.
-            seconds = max(600.0, seconds or 0.0)
+            # A free proxy that failed is rested a few minutes (not 10): good ones time out now and then too.
+            seconds = max(180.0, seconds if seconds is not None else self._cooldown)
         self._owner(proxy).ban(proxy, seconds)
 
     def ok(self, proxy: str) -> None:
         self._owner(proxy).ok(proxy)
+
+    def static_counts(self) -> tuple[int, int]:
+        """(available, total) free proxies."""
+        return (self._static.available(), len(self._static)) if self._static else (0, 0)
 
     def health(self) -> float:
         """Share of healthy Tor instances. Banned free proxies are normal churn and must not look like a sick pool."""

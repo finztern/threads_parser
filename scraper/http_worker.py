@@ -449,7 +449,8 @@ async def http_runner(
                                 delta.get(f"src_{src}_error", 0),
                             )
                         )
-                    LOGGER.info("by source: %s", " | ".join(parts))
+                    avail, total = pool.static_counts()
+                    LOGGER.info("by source: %s | static_available=%d/%d", " | ".join(parts), avail, total)
                 LOGGER.info(
                     "http cycle: scraped=%d ok=%d empty=%d not_found=%d failed=%d | requests=%d "
                     "blocked=%d transport_err=%d(timeout=%d) proxies_ok=%d/%d reply_pages=%d | known=%d (+%d new) "
