@@ -46,6 +46,10 @@ proxy_probe_url: "https://www.threads.com/robots.txt"
 proxy_max_latency_seconds: 5.0
 proxy_max_candidates: 15000
 proxy_keep: 500
+# Stage 2: the fast proxies must also open a real Threads page (empty = skip the stage).
+proxy_verify_url: "https://www.threads.com/@zuck/replies"
+proxy_verify_candidates: 600
+proxy_verify_max_latency_seconds: 8.0
 # A free proxy that is slower than this is dropped for a while; Tor keeps http_timeout/tor_http_timeout.
 static_timeout_seconds: 12
 http_attempts: 3

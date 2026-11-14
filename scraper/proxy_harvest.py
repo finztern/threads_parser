@@ -41,14 +41,22 @@ async def _download(client: httpx.AsyncClient, source: str) -> list[str]:
     return out
 
 
-async def _probe(proxy: str, url: str, timeout: float, max_latency: float, sem: asyncio.Semaphore) -> tuple[str, float] | None:
+async def _probe(
+    proxy: str, url: str, timeout: float, max_latency: float, sem: asyncio.Semaphore, need_page: bool = False
+) -> tuple[str, float] | None:
+    """need_page: the answer must be a real Threads page (HTTP 200, data-sjs, no login redirect)."""
     async with sem:
         started = time.monotonic()
         try:
             async with cffi.AsyncSession(impersonate="chrome124", timeout=timeout) as session:
-                response = await session.get(url, proxies={"http": proxy, "https": proxy}, allow_redirects=False)
+                response = await session.get(
+                    url, proxies={"http": proxy, "https": proxy}, allow_redirects=need_page,
+                    headers={"Accept-Language": "en-US,en;q=0.9"},
+                )
             latency = time.monotonic() - started
             if response.status_code == 200 and latency <= max_latency:
+                if need_page and ("/login" in str(response.url) or b"data-sjs" not in response.content):
+                    return None
                 return proxy, latency
         except Exception:  # noqa: BLE001 - dead proxy
             pass
@@ -71,7 +79,20 @@ async def harvest(cfg: dict) -> list[str]:
     candidates = candidates[:max_candidates]
     sem = asyncio.Semaphore(int(cfg.get("proxy_probe_concurrency", 150)))
     results = await asyncio.gather(*(_probe(p, probe_url, max_latency * 2, max_latency, sem) for p in candidates))
-    alive = sorted((r for r in results if r), key=lambda r: r[1])[:keep]
+    alive = sorted((r for r in results if r), key=lambda r: r[1])
+    stage1 = len(alive)
+    verify_url = cfg.get("proxy_verify_url", "https://www.threads.com/@zuck/replies")
+    if verify_url and alive:
+        # Stage 2: a real Threads page through every fast proxy (the cheap probe cannot see 429 / login walls).
+        limit = int(cfg.get("proxy_verify_candidates", 600))
+        verify_latency = float(cfg.get("proxy_verify_max_latency_seconds", 8.0))
+        checked = await asyncio.gather(
+            *(_probe(p, verify_url, verify_latency * 2, verify_latency, sem, need_page=True) for p, _ in alive[:limit])
+        )
+        verified = [r for r in checked if r]
+        LOGGER.info("proxy harvest: stage 2 (real page): %d of %d fast proxies pass", len(verified), min(limit, stage1))
+        alive = sorted(verified, key=lambda r: r[1])
+    alive = alive[:keep]
     if alive:
         LOGGER.info(
             "proxy harvest: %d listed, %d probed, %d fast (<=%.1fs) kept, median %.1fs",
