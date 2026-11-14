@@ -568,7 +568,7 @@ async def http_runner(
                         hi=int(cfg.get("http_concurrency_max", 110)),
                         rps=delta.get("requests", 0) / cycle_seconds,
                         block_ratio=0.0 if pool.rotating else delta.get("blocked", 0) / max(delta.get("requests", 0), 1),
-                        ok_ratio=pool.available() / max(len(pool), 1),
+                        ok_ratio=pool.health() if hasattr(pool, "health") else pool.available() / max(len(pool), 1),
                     )
                     if message:
                         LOGGER.info("autotune: %s", message)

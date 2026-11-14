@@ -65,5 +65,9 @@ class MixedPool:
     def ok(self, proxy: str) -> None:
         self._owner(proxy).ok(proxy)
 
+    def health(self) -> float:
+        """Share of healthy Tor instances. Banned free proxies are normal churn and must not look like a sick pool."""
+        return self._tor.available() / max(len(self._tor), 1)
+
     def available(self) -> int:
         return self._tor.available() + (self._static.available() if self._static else 0)
