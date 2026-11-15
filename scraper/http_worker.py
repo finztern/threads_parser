@@ -160,7 +160,7 @@ async def http_runner(
             base_interval=float(cfg.get("hot_base_interval_seconds", 300)),
             min_interval=float(cfg.get("hot_min_interval_seconds", 90)),
             max_misses=int(cfg.get("hot_max_misses", 5)),
-            max_posts=int(cfg.get("hot_max_posts", 100_000)),
+            max_posts=int(cfg.get("hot_max_posts", 200_000)),
             owns=owner,
             fresh_min_interval=float(cfg.get("hot_fresh_min_interval_seconds", 45)),
         )
@@ -343,6 +343,10 @@ async def http_runner(
                                     totals["tab_error"] += 1
                                 totals["tab_pages"] += 1
                                 totals[f"tab_{tab_label}"] += 1
+                                if hot is not None and tab_posts and cfg.get("hot_from_tabs", True):
+                                    totals["hot_tab_added"] += hot.observe_parents(
+                                        tab_posts, min_replies=int(cfg.get("hot_tab_min_replies", 3))
+                                    )
                                 if label == "":
                                     # Tab-only: an empty tab is a normal profile, not a dead one.
                                     label = "ok" if tab_label == "empty" else tab_label
@@ -549,7 +553,7 @@ async def http_runner(
                 if hot is not None:
                     LOGGER.info(
                         "hot posts: pages=%d new=%d (%.2f new/page) failed=%d | first opens=%d -> %.2f new/page, "
-                        "repeat opens=%d -> %.2f new/page | tracked=%d due_now=%d",
+                        "repeat opens=%d -> %.2f new/page | tracked=%d due_now=%d added_from_tabs=%d",
                         totals["hot_pages"],
                         totals["hot_new"],
                         totals["hot_new"] / max(totals["hot_pages"], 1),
@@ -560,6 +564,7 @@ async def http_runner(
                         totals["hot_again_new"] / max(totals["hot_again_pages"], 1),
                         len(hot),
                         hot.count_due(),
+                        totals["hot_tab_added"],
                     )
                 LOGGER.info("event loop lag: max=%.2fs this cycle", loop_lag["max"])
                 loop_lag["max"] = 0.0

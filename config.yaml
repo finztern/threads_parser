@@ -146,6 +146,9 @@ targets:
 # Budget between profile pages and hot post pages is tuned by itself (data/budget.json).
 auto_budget: true
 hot_posts_per_cycle: 1800
+# Threads of the replies found on a Replies tab also go into the hot post queue (needs >= hot_tab_min_replies replies).
+hot_from_tabs: true
+hot_tab_min_replies: 3
 hot_base_interval_seconds: 300
 # For every ok profile also open /@user/replies (the user's own replies: ~3 new comments per page).
 replies_tab: true

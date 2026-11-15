@@ -153,6 +153,20 @@ def _reply_to_name(tpai: dict[str, Any]) -> str:
     return value.lower() if isinstance(value, str) else ""
 
 
+def _hot_parent(parent: dict[str, Any], reply: dict[str, Any]) -> tuple[str, str, str, float, int, float] | None:
+    """The top-level post a fresh reply answers = a thread where replies are appearing right now."""
+    ptpai = parent.get("text_post_app_info") or {}
+    pk, code, taken = parent.get("pk"), parent.get("code"), parent.get("taken_at")
+    owner = (parent.get("user") or {}).get("username")
+    if not pk or not code or not taken or not owner or ptpai.get("is_reply"):
+        return None
+    try:
+        count = int(ptpai.get("direct_reply_count") or 0)
+        return (str(owner), str(code), str(pk), float(taken), count, float(reply.get("taken_at") or 0))
+    except (TypeError, ValueError):
+        return None
+
+
 def _extract_ssr_user_replies(html: str, username: str) -> list[RawThreadsPost]:
     """Replies written BY @username, from the "Replies" tab page (/@username/replies).
 
@@ -184,6 +198,7 @@ def _extract_ssr_user_replies(html: str, username: str) -> list[RawThreadsPost]:
                     continue
                 parsed = _parse_post_node(post, external_parent_id=str(parent_pk))
                 if parsed:
+                    parsed.hot_parent = _hot_parent(parent, post)
                     posts[parsed.external_id] = parsed
     return list(posts.values())
 

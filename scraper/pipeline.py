@@ -43,6 +43,9 @@ class RawThreadsPost:
         # Exorde parent rule: "" for a top-level post, real parent post id for a reply.
         self.external_parent_id = external_parent_id
         self.extra = extra or {}
+        # Local-only hint (never sent): the top-level post this reply answers, for the hot post queue:
+        # (username, code, pk, created_ts, direct_reply_count, reply_ts). Kept out of `extra`, which goes into the summary.
+        self.hot_parent: tuple[str, str, str, float, int, float] | None = None
 
 
 def build_payload(post: RawThreadsPost) -> dict[str, Any]:

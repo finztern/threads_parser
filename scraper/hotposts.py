@@ -154,6 +154,41 @@ class HotPosts:
                 known.next_due = now  # enough new replies piled up: due immediately
         return added
 
+    def observe_parents(self, posts: list, min_replies: int = 3, max_reply_age: float = 6 * 3600.0,
+                        now: float | None = None) -> int:
+        """Register the threads that fresh replies from a Replies tab belong to (post.hot_parent).
+
+        A post with only the reply we already hold has nothing else to give, so a parent needs at least
+        `min_replies` direct replies. Returns how many posts are new here.
+        """
+        now = time.time() if now is None else now
+        added = 0
+        for post in posts:
+            hint = getattr(post, "hot_parent", None)
+            if not hint:
+                continue
+            owner, code, pk, created, count, reply_ts = hint
+            if (
+                count < max(1, min_replies)
+                or now - created > self._max_age
+                or now - reply_ts > max_reply_age
+                or not self._owns(owner)
+            ):
+                continue
+            known = self._posts.get(pk)
+            if known is None:
+                # Replies are arriving in this thread right now: the freshest ones are the likeliest to be new.
+                freshness = 2.0 if now - reply_ts < 1800 else 1.0
+                self._posts[pk] = _Post(owner, code, created, count, 0, min(count, 10) * 0.3 * freshness, 0, now)
+                added += 1
+                self._dirty = True
+            elif count != known.seen:
+                known.seen = count
+                self._dirty = True
+                if count - known.fetched >= self._min_growth and known.next_due > now:
+                    known.next_due = now
+        return added
+
     # ---- scheduling ------------------------------------------------------------------------------
     def due(self, limit: int, now: float | None = None) -> list[tuple[str, str, str]]:
         """(username, code, pk) of the posts to open now, best expected yield first."""
