@@ -270,6 +270,7 @@ async def http_runner(
                 client.set_concurrency(concurrency)
                 if isinstance(pool, MixedPool):
                     pool.set_share(float(cfg.get("static_proxy_share", 0.0)))  # hot-reloaded from config.yaml
+                client.set_session_reuse(bool(cfg.get("reuse_sessions", True)), int(cfg.get("session_max_uses", 300)))
                 client.set_max_rps(float(cfg.get("max_requests_per_second", 0)))
                 target_slots = max(concurrency, int(concurrency * float(cfg.get("target_concurrency_factor", 1.5))))
                 sem = asyncio.Semaphore(target_slots)

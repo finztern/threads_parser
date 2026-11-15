@@ -62,6 +62,10 @@ proxy_verify_candidates: 600
 proxy_verify_max_latency_seconds: 8.0
 # A free proxy that is slower than this is dropped for a while; Tor keeps http_timeout/tor_http_timeout.
 static_timeout_seconds: 12
+# Reuse one curl session (one TCP/TLS connection) per vpn / static proxy instead of a new session per request: cuts the
+# event-loop CPU (TLS handshakes). Cookies are cleared before every request. false = the old behaviour.
+reuse_sessions: true
+session_max_uses: 300
 http_attempts: 3
 http_timeout_seconds: 20
 # A proxy that failed/was blocked is skipped for this long.
