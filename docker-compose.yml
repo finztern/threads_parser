@@ -16,6 +16,11 @@ services:
       TOR_HOST: ${TOR_HOST:-host.docker.internal}
       PARSER_SHARD: ${PARSER_SHARD:-}
       PROFILE_SECONDS: ${PROFILE_SECONDS:-0}
+      # Pages are ~1 MB decoded and hundreds are in flight. With glibc's default (dynamic) mmap threshold such buffers end
+      # up in the fragmented heap and the RSS never shrinks. A fixed threshold keeps them in mmap, freed right away.
+      MALLOC_MMAP_THRESHOLD_: ${MALLOC_MMAP_THRESHOLD_:-262144}
+      MALLOC_TRIM_THRESHOLD_: ${MALLOC_TRIM_THRESHOLD_:-262144}
+      MALLOC_ARENA_MAX: ${MALLOC_ARENA_MAX:-2}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
