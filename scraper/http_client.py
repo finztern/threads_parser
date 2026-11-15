@@ -86,6 +86,7 @@ class ThreadsHttpClient:
         # handshake and a curl_multi cleanup in the event-loop thread (about 40% of its time in the profile).
         self._reuse = False
         self._reuse_limit = 300
+        self._reuse_static = False  # free public proxies: one throwaway session each (hundreds of live sessions eat GBs)
         self._sessions: dict[str, AsyncSession] = {}
         self._session_uses: dict[str, int] = {}
         self._session_seen: dict[str, float] = {}
@@ -125,12 +126,16 @@ class ThreadsHttpClient:
             self.stats["parse_fallback"] += 1
             return parse_bytes(fn, body, arg)
 
-    def set_session_reuse(self, enabled: bool, max_uses: int = 300) -> None:
+    def set_session_reuse(self, enabled: bool, max_uses: int = 300, reuse_static: bool = False) -> None:
         self._reuse = bool(enabled)
         self._reuse_limit = max(10, int(max_uses))
+        self._reuse_static = bool(reuse_static)
         if not self._reuse and self._sessions:
             for proxy in list(self._sessions):
                 self._retire(proxy)
+
+    def session_count(self) -> int:
+        return len(self._sessions)
 
     def _retire(self, proxy: str) -> None:
         """Stop handing out this session; close it a minute later (requests may still be running on it)."""
@@ -157,7 +162,7 @@ class ThreadsHttpClient:
 
     async def _get(self, proxy: str, src: str, url: str, timeout: float):
         session_opts, request_opts = transport_options(proxy)
-        if not (self._reuse and src in ("static", "vpn")):
+        if not (self._reuse and (src == "vpn" or (src == "static" and self._reuse_static))):
             async with AsyncSession(impersonate=self._impersonate, timeout=timeout, **session_opts) as session:
                 return await session.get(url, headers=HEADERS, allow_redirects=True, **request_opts)
         session = self._sessions.get(proxy)

@@ -32,6 +32,18 @@ from scraper.pipeline import configure_url_check, set_url_check_poster
 from scraper.worker import AGE_LABELS, dispatch_posts
 
 
+def _rss_mb() -> int:
+    """Resident memory of this process in MB (0 when /proc is not available)."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
 def _resolve(path_str: str) -> Path:
     path = Path(path_str)
     return path if path.is_absolute() else BASE_DIR / path
@@ -270,7 +282,11 @@ async def http_runner(
                 client.set_concurrency(concurrency)
                 if isinstance(pool, MixedPool):
                     pool.set_share(float(cfg.get("static_proxy_share", 0.0)))  # hot-reloaded from config.yaml
-                client.set_session_reuse(bool(cfg.get("reuse_sessions", True)), int(cfg.get("session_max_uses", 300)))
+                client.set_session_reuse(
+                    bool(cfg.get("reuse_sessions", True)),
+                    int(cfg.get("session_max_uses", 300)),
+                    bool(cfg.get("reuse_static_sessions", False)),
+                )
                 client.set_max_rps(float(cfg.get("max_requests_per_second", 0)))
                 target_slots = max(concurrency, int(concurrency * float(cfg.get("target_concurrency_factor", 1.5))))
                 sem = asyncio.Semaphore(target_slots)
@@ -452,7 +468,10 @@ async def http_runner(
                             )
                         )
                     avail, total = pool.static_counts()
-                    LOGGER.info("by source: %s | static_available=%d/%d", " | ".join(parts), avail, total)
+                    LOGGER.info(
+                        "by source: %s | static_available=%d/%d | sessions=%d rss=%dMB",
+                        " | ".join(parts), avail, total, client.session_count(), _rss_mb(),
+                    )
                 LOGGER.info(
                     "http cycle: scraped=%d ok=%d empty=%d not_found=%d failed=%d | requests=%d "
                     "blocked=%d transport_err=%d(timeout=%d) proxies_ok=%d/%d reply_pages=%d | known=%d (+%d new) "
