@@ -34,6 +34,7 @@ class RawThreadsPost:
         username: str,
         external_parent_id: str = "",
         extra: dict[str, Any] | None = None,
+        picture: str = "",
     ) -> None:
         self.external_id = external_id
         self.content = content
@@ -44,6 +45,7 @@ class RawThreadsPost:
         # Exorde parent rule: "" for a top-level post, real parent post id for a reply.
         self.external_parent_id = external_parent_id
         self.extra = extra or {}
+        self.picture = picture  # author's profile picture URL as given by the page ("" = not given); never downloaded
         # Local-only hint (never sent): the top-level post this reply answers, for the hot post queue:
         # (username, code, pk, created_ts, direct_reply_count, reply_ts). Kept out of `extra`, which goes into the summary.
         self.hot_parent: tuple[str, str, str, float, int, float] | None = None
@@ -71,7 +73,7 @@ def build_payload(post: RawThreadsPost) -> dict[str, Any]:
         if link not in content:
             content += f" --{link}"
 
-    return {
+    item = {
         "content": content,
         "external_id": post.external_id,
         "created_at": created_at_iso,
@@ -85,6 +87,12 @@ def build_payload(post: RawThreadsPost) -> dict[str, Any]:
         "domain": DOMAIN,
         "summary": json.dumps(summary_obj, ensure_ascii=False),
     }
+    # Optional Exorde fields: only what the page really gave us, never an empty or invented value.
+    if post.username and "/post/" in post.url:
+        item["userprofile_url"] = post.url.rsplit("/post/", 1)[0]  # https://www.threads.com/@user
+    if post.picture:
+        item["picture"] = post.picture
+    return item
 
 
 @retry(

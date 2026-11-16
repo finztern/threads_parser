@@ -61,6 +61,18 @@ def _parse_post_node(node: dict[str, Any], external_parent_id: str) -> RawThread
         return None
 
     tpai = node.get("text_post_app_info") or {}
+    picture = user.get("profile_pic_url")
+    picture = picture if isinstance(picture, str) and picture.startswith("http") else ""
+    # Real counters for the summary (only those the page gave: no nulls, nothing invented).
+    counters = {
+        key: value
+        for key, value in (
+            ("repost_count", tpai.get("repost_count")),
+            ("quote_count", tpai.get("quote_count")),
+            ("author_verified", user.get("is_verified")),
+        )
+        if value is not None
+    }
     # Images, videos, carousels (used by the text-only filter). Link previews are NOT media: their URL
     # goes to extra["links"] and is appended to the content.
     has_media = bool(
@@ -84,7 +96,9 @@ def _parse_post_node(node: dict[str, Any], external_parent_id: str) -> RawThread
             "is_reply": tpai.get("is_reply", bool(external_parent_id)),
             "has_media": has_media,
             "links": _external_links(tpai),
+            **counters,
         },
+        picture=picture,
     )
 
 
