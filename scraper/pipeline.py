@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import hashlib
 import json
 import os
 import time
@@ -65,7 +66,7 @@ def build_payload(post: RawThreadsPost) -> dict[str, Any]:
 
     # Exorde rule: every outgoing link (link preview, shortened/linked text) must be present in the
     # content. Links that are not already written in the text are appended as " --<url>".
-    content = post.content
+    content = (post.content or "").strip()  # Exorde: plain text without spaces at the edges
     for link in post.extra.get("links") or []:
         if link not in content:
             content += f" --{link}"
@@ -77,7 +78,8 @@ def build_payload(post: RawThreadsPost) -> dict[str, Any]:
         "collected_at": collected_at_iso,
         "url": post.url,
         "title": "",  # Threads posts have no separate title.
-        "author": post.author,
+        # Exorde: author = SHA1 of the username (hex), never the plain nick or the display name.
+        "author": hashlib.sha1(post.username.encode("utf-8")).hexdigest() if post.username else "",
         "username": post.username,
         "external_parent_id": post.external_parent_id,
         "domain": DOMAIN,
