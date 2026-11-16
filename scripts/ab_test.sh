@@ -19,6 +19,21 @@ share_line() {  # share of requests that left through vpn+static in the last by-
     { for (i = 1; i <= NF; i++) if ($i ~ /^(tor|static|vpn)$/ && $(i+1) ~ /^req=/) { split($(i+1), a, "="); n[$i] = a[2] } }
     END { t = n["tor"] + n["static"] + n["vpn"]; if (t > 0) printf "%.0f%%", 100 * (n["static"] + n["vpn"]) / t; else printf "n/a" }'
 }
+cfg_in_container() {  # value of the key as the PARSER CONTAINER sees it (a single-file bind mount can go stale)
+  docker compose exec -T parser grep -E "^${KEY}:" /app/config.yaml 2>/dev/null | head -1 | awk '{print $2}'
+}
+set_and_verify() {  # set the value on the host, then make sure the container really got it (recreate it if not)
+  python3 scripts/setcfg.py "$KEY" "$1" > /dev/null
+  sleep 20
+  local seen; seen=$(cfg_in_container)
+  if [ "$seen" != "$1" ]; then
+    echo "  container sees $KEY=$seen, expected $1: stale bind mount, recreating the parser"
+    docker compose up -d --force-recreate parser > /dev/null 2>&1
+    sleep 30
+    seen=$(cfg_in_container)
+    [ "$seen" = "$1" ] || echo "  WARNING: container still sees $KEY=$seen, this block is NOT valid"
+  fi
+}
 declare -A SUM CNT
 SUM[$A]=0; SUM[$B]=0; CNT[$A]=0; CNT[$B]=0
 blocks=$(( HOURS * 60 / BLOCK_MIN ))
@@ -27,8 +42,8 @@ echo "A/B test: $KEY $A vs $B, $blocks blocks of $BLOCK_MIN min, started $(date 
 for ((i = 0; i < blocks; i++)); do
   if (( i % 2 == 0 )); then value="$A"; else value="$B"; fi
   [ "$current" = "$A" ] && [ "$value" != "$A" ] || true
-  python3 scripts/setcfg.py "$KEY" "$value" > /dev/null
-  sleep "$WARM"
+  set_and_verify "$value"
+  sleep $(( WARM - 50 ))
   t0=$(total); s0=$(date +%s)
   sleep $(( BLOCK_MIN * 60 - WARM ))
   t1=$(total); s1=$(date +%s)
@@ -41,12 +56,12 @@ for ((i = 0; i < blocks; i++)); do
   CNT[$value]=$(( CNT[$value] + 1 ))
   if awk -v r="$rate" -v m="$MIN_RATE" 'BEGIN { exit !(r < m) }'; then
     echo "  rate below $MIN_RATE: baseline $A restored for the next block"
-    python3 scripts/setcfg.py "$KEY" "$A" > /dev/null
+    set_and_verify "$A"
   fi
 done
 meanA=$(awk -v s="${SUM[$A]}" -v c="${CNT[$A]}" 'BEGIN { if (c > 0) printf "%.2f", s / c; else print 0 }')
 meanB=$(awk -v s="${SUM[$B]}" -v c="${CNT[$B]}" 'BEGIN { if (c > 0) printf "%.2f", s / c; else print 0 }')
 echo "mean new/s: $KEY=$A -> $meanA (${CNT[$A]} blocks), $KEY=$B -> $meanB (${CNT[$B]} blocks)"
 if awk -v a="$meanA" -v b="$meanB" 'BEGIN { exit !(b > a * 1.03) }'; then best="$B"; else best="$A"; fi
-python3 scripts/setcfg.py "$KEY" "$best" > /dev/null
+set_and_verify "$best"
 echo "kept $KEY=$best (B must beat A by more than 3%); finished $(date -u +%H:%M) UTC"
