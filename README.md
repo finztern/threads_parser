@@ -131,6 +131,30 @@ python3 scripts/test_proxies.py --url "https://your-host/health"
 Состояние (`data/`) у каждого своё; при старте чужие записи из него отбрасываются. Адрес коллектора у второго парсера
 - `STORE_ENDPOINT` на первую машину (порт обратного SSH-туннеля, нужен ufw-доступ со второй).
 
+## Домашний мост: парсеры на VPS, коллектор дома (`home/`)
+
+Если коллектор стоит дома (за NAT, в России, откуда IP VPS не открывается), VPS не может подключиться к нему, а дом не
+может подключиться к VPS напрямую. Мост решает это: в Docker-контейнере дома работает Xray с одним vless-узлом (VPN
+**только внутри контейнера**, система не затрагивается) и по одному обратному SSH-туннелю (`ssh -R`) на каждый VPS через этот
+SOCKS-прокси. Парсеры на VPS шлют на `172.17.0.1:9000` (шлюз docker-моста самого VPS), данные выходят из туннеля на
+`127.0.0.1:9000` дома. Всё исходящее, пробрасывать порты на роутере не нужно.
+
+1. Дома (Debian, Docker): `cd home && cp .env.example .env && cp vless.txt.example vless.txt` (в `vless.txt` своя vless-ссылка,
+   в `.env` свои `BRIDGE_TARGETS`), затем `mkdir -p keys state && ssh-keygen -t ed25519 -N "" -f keys/id_ed25519 && cat keys/id_ed25519.pub`.
+   `vless.txt`, `.env`, `keys/`, `state/` в git не попадают.
+2. На каждом VPS: добавить публичный ключ в `~/.ssh/authorized_keys` с ограничениями (ключ может только открыть этот порт, оболочки нет):
+   `restrict,port-forwarding,permitlisten="172.17.0.1:9000" ssh-ed25519 AAAA... home-bridge`; в `sshd` разрешить указание адреса
+   прослушивания: `echo "GatewayPorts clientspecified" | sudo tee /etc/ssh/sshd_config.d/bridge.conf && sudo systemctl reload ssh`.
+3. На каждом VPS в `.env` парсера: `STORE_ENDPOINT=http://host.docker.internal:9000/store_items`, `URL_CHECK_ENDPOINT=` (пусто:
+   url-check идёт напрямую на Exorde, как в `config.yaml`), затем `docker compose up -d parser`. Мок-коллектор и старые
+   туннели на этих VPS остановить (`docker compose stop collector`, `systemctl disable --now vps1-tunnel`).
+4. Дома: `docker compose up -d --build`, затем `docker compose logs -f bridge`: раз в минуту строка
+   `bridge: xray=up tunnels up=2/2 local collector 127.0.0.1:9000=up`. Проверка с VPS: `curl -s -m 5 -o /dev/null -w "%{http_code}\n" -X POST
+   http://172.17.0.1:9000/store_items -H 'content-type: application/json' -d '[]'` (любой ответ вашего коллектора = доставка работает).
+
+Если домашний коллектор или туннель недоступен, отправка не подтверждается, и парсер повторит эти элементы в следующих циклах
+(в `SeenCache` попадает только подтверждённое).
+
 ## Самонастройка бюджета (`auto_budget`)
 
 Включена по умолчанию (`auto_budget: false` отключает). Регулятор не гадает, какой вид запросов «выгоднее» (профили находят

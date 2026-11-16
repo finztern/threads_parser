@@ -11,3 +11,9 @@ targets.txt
 data/
 vpn/*
 !vpn/.gitkeep
+
+# Home bridge secrets/state
+home/vless.txt
+home/.env
+home/keys/
+home/state/

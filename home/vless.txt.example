@@ -1,0 +1,2 @@
+# One vless:// link (the VPN exit used only by this container). Copy to home/vless.txt, keep it out of git.
+vless://UUID@HOST:443?security=tls&type=httpupgrade&path=%2Fpath%2F&host=EXAMPLE&sni=EXAMPLE&fp=chrome#name

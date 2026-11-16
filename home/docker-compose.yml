@@ -1,0 +1,21 @@
+# Home bridge: vless (inside the container only) + ssh reverse tunnels to the VPS parsers -> your local collector.
+# Run from this directory:  docker compose up -d --build   (see "Домашний мост" in the README)
+services:
+  bridge:
+    build:
+      context: ..
+      dockerfile: home/Dockerfile
+    # Host network: 127.0.0.1:9000 inside the container IS the collector on the home machine.
+    network_mode: host
+    env_file: .env
+    volumes:
+      - ./vless.txt:/data/vless.txt:ro
+      - ./keys:/keys:ro
+      - ./state:/state
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+    restart: unless-stopped
