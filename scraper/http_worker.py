@@ -599,6 +599,21 @@ async def http_runner(
                     )
                     if message:
                         LOGGER.info("autotune: %s", message)
+                if delta.get("bytes_tab", 0) + delta.get("bytes_post", 0) + delta.get("bytes_profile", 0):
+                    span = max(time.monotonic() - cycle_start, 0.001)
+                    new_by_kind = {
+                        "tab": totals["tab_new"], "post": totals["hot_new"], "profile": totals["profile_new"],
+                    }
+                    parts = []
+                    for kind in ("tab", "post", "profile"):
+                        nbytes, npages = delta.get(f"bytes_{kind}", 0), delta.get(f"pages_{kind}", 0)
+                        parts.append(
+                            "%s %d pages x %.0f KB = %.0f MB -> %.2f new/MB" % (
+                                kind, npages, nbytes / max(npages, 1) / 1024, nbytes / 1e6, new_by_kind[kind] / max(nbytes / 1e6, 0.001),
+                            )
+                        )
+                    total_mb = sum(delta.get(f"bytes_{k}", 0) for k in ("tab", "post", "profile")) / 1e6
+                    LOGGER.info("traffic (decoded): %s | total %.0f MB = %.1f MB/s", " | ".join(parts), total_mb, total_mb / span)
                 if client.status_kinds:
                     LOGGER.info(
                         "blocked/bad pages by status: %s",

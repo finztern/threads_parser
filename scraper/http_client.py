@@ -279,6 +279,8 @@ class ThreadsHttpClient:
                 last = "failed"
                 continue
             body = response.content
+            self.stats[f"bytes_{kind}"] += len(body)  # decoded size, only to compare request kinds (wire is ~5-8x smaller)
+            self.stats[f"pages_{kind}"] += 1
             if status != 200 or b"data-sjs" not in body:
                 self.status_kinds[f"bad_page_{status}"] += 1
                 self.stats["bad_page"] += 1
