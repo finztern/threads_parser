@@ -6,6 +6,8 @@ real pages / 429 / login / timeouts and the latency, and can write the working l
 
 Usage inside the container (Xray is in the image):
   docker compose run --rm --no-deps parser python3 scripts/vpn_probe.py URL [URL ...] [--count 150] [--out /app/data/vpn_ok.txt]
+Other sites (e.g. Reddit RSS): add --target https://www.reddit.com/r/news/new/.rss --expect "<entry"
+(a node counts as "ok" on HTTP 200 and the expected text in the body; 403/429 etc. are counted separately).
 """
 from __future__ import annotations
 
@@ -31,6 +33,8 @@ from curl_cffi import requests as cffi  # noqa: E402
 from scraper.vpn import build_xray_config, parse_vless  # noqa: E402
 
 THREADS_URL = "https://www.threads.com/@zuck/replies"
+TARGET = THREADS_URL  # overridden by --target
+EXPECT = b"data-sjs"  # what a real page must contain, overridden by --expect
 BASE_PORT = 12000
 
 
@@ -67,14 +71,14 @@ async def probe(port: int, sem: asyncio.Semaphore) -> tuple[str, float]:
         started = time.monotonic()
         try:
             async with cffi.AsyncSession(impersonate="chrome124", timeout=20) as session:
-                response = await session.get(THREADS_URL, proxies={"http": proxy, "https": proxy}, allow_redirects=True,
+                response = await session.get(TARGET, proxies={"http": proxy, "https": proxy}, allow_redirects=True,
                                              headers={"Accept-Language": "en-US,en;q=0.9"})
             elapsed = time.monotonic() - started
             if "/login" in str(response.url):
                 return "login", elapsed
             if response.status_code == 429:
                 return "429", elapsed
-            if response.status_code == 200 and b"data-sjs" in response.content:
+            if response.status_code == 200 and EXPECT in response.content:
                 return "ok", elapsed
             return f"http_{response.status_code}", elapsed
         except Exception as exc:  # noqa: BLE001
@@ -87,7 +91,11 @@ async def main() -> None:
     ap.add_argument("urls", nargs="+")
     ap.add_argument("--count", type=int, default=150)
     ap.add_argument("--out", default="")
+    ap.add_argument("--target", default=THREADS_URL, help="page fetched through every node")
+    ap.add_argument("--expect", default="data-sjs", help="text a real page must contain")
     args = ap.parse_args()
+    global TARGET, EXPECT
+    TARGET, EXPECT = args.target, args.expect.encode("utf-8")
     xray = os.getenv("XRAY_BIN") or shutil.which("xray")
     if not xray:
         sys.exit("xray binary not found")
@@ -131,7 +139,7 @@ async def main() -> None:
             proc.terminate()
     counts = Counter(kind for kind, _ in results)
     ok_times = sorted(t for kind, t in results if kind == "ok")
-    print(f"\nprobed {len(results)} nodes via {THREADS_URL}")
+    print(f"\nprobed {len(results)} nodes via {TARGET}")
     print(f"result: {dict(counts.most_common())}")
     if ok_times:
         print(f"ok latency: median {statistics.median(ok_times):.1f}s, p90 {ok_times[int(len(ok_times) * 0.9) - 1]:.1f}s")
