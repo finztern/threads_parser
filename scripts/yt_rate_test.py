@@ -35,7 +35,7 @@ STATUS_RE = re.compile(r'"playabilityStatus":\{"status":"([A-Z_]+)"(?:,"reason":
 WEB_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"  # public key of the web client (same for everybody)
 WEB_VERSION = "2.20241120.01.00"
 AGE_RE = re.compile(r'"publishedTime":"([^"]+)"')
-NEWEST_RE = re.compile(r'Newest first.{0,1500}?"token":"([^"]+)"', re.S)
+NEWEST_RE = re.compile(r'"title":"Newest(?: first)?".{0,1500}?"continuationCommand":\{"token":"([^"]+)"', re.S)  # menu items: "Top", "Newest"
 SECTION_RE = re.compile(r'"sectionIdentifier":"([^"]+)"')
 
 
