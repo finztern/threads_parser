@@ -721,7 +721,7 @@ async def _harvest_loop(pool: MixedPool, config_store: ConfigStore, stop_event: 
 async def _vpn_loop(pool: MixedPool, config_store: ConfigStore, stop_event: asyncio.Event) -> None:
     """Free vless nodes: refresh the list every `vpn_refresh_minutes`; each refresh uses its own port range so the
     old Xray keeps serving until the new list is in the pool."""
-    from scraper.vpn_harvest import harvest_nodes, stop_xray
+    from scraper.vpn_harvest import harvest_nodes, stop_xray, xray_tail
 
     current = None
     flip = 0
@@ -742,7 +742,14 @@ async def _vpn_loop(pool: MixedPool, config_store: ConfigStore, stop_event: asyn
                     previous, current = current, proc
                     flip += 1
                     stop_xray(previous)
-            await _sleep(stop_event, max(5.0, float(cfg.get("vpn_refresh_minutes", 60))) * 60)
+            # Wait for the next refresh, but watch Xray: if it died, every vpn proxy is dead, so re-harvest at once.
+            deadline = time.monotonic() + max(5.0, float(cfg.get("vpn_refresh_minutes", 60))) * 60
+            while not stop_event.is_set() and time.monotonic() < deadline:
+                await _sleep(stop_event, 20)
+                if current is not None and current.returncode is not None:
+                    LOGGER.warning("vpn: xray exited with %s, re-harvesting now. log: %s", current.returncode, xray_tail())
+                    current = None
+                    break
     finally:
         stop_xray(current)
 

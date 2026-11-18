@@ -87,6 +87,9 @@ async def _probe(port: int, timeout: float, max_latency: float, sem: asyncio.Sem
         return None
 
 
+XRAY_LOG = os.path.join(tempfile.gettempdir(), "xray_vpn.log")
+
+
 async def harvest_nodes(cfg: dict, base_port: int) -> tuple[list[str], asyncio.subprocess.Process | None]:
     """(working local proxies, the Xray process that serves them). Empty list when nothing worked."""
     sources = [s for s in (cfg.get("vpn_sources") or []) if isinstance(s, str) and s.strip()]
@@ -113,9 +116,10 @@ async def harvest_nodes(cfg: dict, base_port: int) -> tuple[list[str], asyncio.s
             return [], None
         path = Path(tmp) / "xray.json"
         path.write_text(json.dumps(build_xray_config(nodes, base_port)), encoding="utf-8")
-        proc = await asyncio.create_subprocess_exec(
-            xray, "run", "-c", str(path), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-        )
+        # Xray's own log goes to a file so a later death can be explained (see xray_tail).
+        log_file = open(XRAY_LOG, "wb")  # noqa: SIM115 - handed to the child process
+        proc = await asyncio.create_subprocess_exec(xray, "run", "-c", str(path), stdout=log_file, stderr=log_file)
+        log_file.close()
         await asyncio.sleep(3)  # Xray has read the config by now; the temp dir may go
         if proc.returncode is not None:
             LOGGER.warning("vpn harvest: xray exited with %s", proc.returncode)
@@ -145,3 +149,11 @@ def _stop(proc: asyncio.subprocess.Process | None) -> None:
 
 
 stop_xray = _stop
+
+
+def xray_tail(lines: int = 6) -> str:
+    """Last lines of the Xray log (why did it die?)."""
+    try:
+        return " | ".join(Path(XRAY_LOG).read_text(errors="ignore").splitlines()[-lines:])[:600]
+    except OSError:
+        return ""
