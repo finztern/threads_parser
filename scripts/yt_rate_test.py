@@ -1,0 +1,223 @@
+"""YouTube comments throughput test (not a parser): how many requests/comments per second can the free vless nodes sustain?
+
+Flow per video (one curl_cffi session per video = one TCP/TLS connection, Chrome impersonation):
+  1. GET watch page -> InnerTube key, client version and the first comments continuation token
+  2. POST youtubei/v1/next with the token, then follow the next continuation tokens (pagination) a few times
+Comments are counted by commentId. Run through scripts/yt_rate_test.sh (it starts the nodes).
+Usage: python3 scripts/yt_rate_test.py PORT_FIRST PORT_COUNT [seconds] [concurrency] [pages_per_video]
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import random
+import re
+import sys
+import time
+from collections import Counter
+
+from curl_cffi.requests import AsyncSession
+
+CHANNELS = [  # popular channels, only used to collect fresh video ids from their public RSS feeds
+    "UCX6OQ3DkcsbYNE6H8uQQuVA", "UCq-Fj5jknLsUf-MWSy4_brA", "UC-lHJZR3Gqxm24_Vd_AJ5Yw", "UCbCmjCuTUZos6Inko4u57UQ",
+    "UCJ5v_MCY6GNUBTO8-D3XoAg", "UCFFbwnve3yF62-tVXkTyHqg", "UCk8GzjMOrta8yxDcKfylJYw", "UCvlE5gTbOvjiolFlEm-c_Ow",
+    "UCJplp5SjeGSdVdwsfb9Q7lQ",
+]
+FALLBACK_VIDEOS = ["dQw4w9WgXcQ", "9bZkp7q19f0", "kJQP7kiw5Fk", "JGwWNGJdvx8", "RgKAFK5djSk"]
+HEADERS = {"Accept-Language": "en-US,en;q=0.9", "Cookie": "SOCS=CAI; CONSENT=PENDING+987"}
+
+KEY_RE = re.compile(r'"INNERTUBE_API_KEY":"([^"]+)"')
+VER_RE = re.compile(r'"INNERTUBE_CONTEXT_CLIENT_VERSION":"([^"]+)"')
+TOKEN_RE = re.compile(r'"token":"([^"]+)"')
+NEXT_RE = re.compile(r'"continuationCommand":\{"token":"([^"]+)"')
+CID_RE = re.compile(r'"commentId":"([^"]+)"')
+TEXT_RE = re.compile(r'"commentId":"[^"]+".{0,1500}?"content":\{"content":"((?:[^"\\]|\\.)*)"', re.S)
+
+
+def first_token(page: str) -> str | None:
+    """Comments continuation: the token sits in the itemSectionRenderer just before sectionIdentifier=comment-item-section."""
+    idx = page.find('"sectionIdentifier":"comment-item-section"')
+    if idx < 0:
+        idx = page.find('"targetId":"comments-section"')
+    if idx < 0:
+        return None
+    tokens = TOKEN_RE.findall(page[max(0, idx - 4000):idx])
+    return tokens[-1] if tokens else None
+
+
+class Stats:
+    def __init__(self) -> None:
+        self.c: Counter[str] = Counter()
+        self.comment_ids: set[str] = set()
+        self.samples: list[str] = []
+        self.lat: dict[str, list[float]] = {"page": [], "next": []}
+
+    def window(self) -> tuple[int, int, int, int]:
+        return self.c["page_ok"] + self.c["next_ok"], len(self.comment_ids), self.c["429"], self.c["err"] + self.c["timeout"]
+
+
+async def main() -> None:
+    first, count = int(sys.argv[1]), int(sys.argv[2])
+    seconds = float(sys.argv[3]) if len(sys.argv) > 3 else 90
+    conc = int(sys.argv[4]) if len(sys.argv) > 4 else 80
+    pages = int(sys.argv[5]) if len(sys.argv) > 5 else 6
+    ports = list(range(first, first + count))
+    banned: dict[int, float] = {}
+    st = Stats()
+
+    def pick() -> int:
+        now = time.monotonic()
+        live = [p for p in ports if banned.get(p, 0) < now]
+        return random.choice(live or ports)
+
+    def proxies(port: int) -> dict:
+        return {"http": f"socks5h://127.0.0.1:{port}", "https": f"socks5h://127.0.0.1:{port}"}
+
+    # video ids from the public RSS feeds of busy channels
+    videos: list[str] = []
+
+    async def rss(ch: str) -> None:
+        try:
+            async with AsyncSession(impersonate="chrome", timeout=15, proxies=proxies(pick())) as s:
+                r = await s.get(f"https://www.youtube.com/feeds/videos.xml?channel_id={ch}", headers=HEADERS)
+            if r.status_code == 200:
+                videos.extend(re.findall(r"<yt:videoId>([^<]+)</yt:videoId>", r.text))
+        except Exception:  # noqa: BLE001
+            pass
+
+    await asyncio.gather(*(rss(c) for c in CHANNELS))
+    print(f"video ids from RSS: {len(videos)} ({'fallback list added' if len(videos) < 20 else 'ok'})")
+    videos = list(dict.fromkeys(videos + FALLBACK_VIDEOS))
+
+    deadline = time.monotonic() + seconds
+    sem = asyncio.Semaphore(conc)
+
+    def fail(kind: str, exc_or_code, port: int, ban: float = 30.0) -> None:
+        text = str(exc_or_code).lower()
+        st.c["timeout" if "timed out" in text or "timeout" in text else "err"] += 1
+        st.c[f"fail_{kind}_{str(exc_or_code)[:40]}"] += 1
+        banned[port] = time.monotonic() + ban
+
+    async def one_video(vid: str) -> None:
+        port = pick()
+        async with sem:
+            if time.monotonic() > deadline:
+                return
+            async with AsyncSession(impersonate="chrome", timeout=20, proxies=proxies(port)) as s:
+                t0 = time.monotonic()
+                try:
+                    r = await s.get(f"https://www.youtube.com/watch?v={vid}", headers=HEADERS)
+                except Exception as exc:  # noqa: BLE001
+                    fail("page", exc, port)
+                    return
+                st.lat["page"].append(time.monotonic() - t0)
+                if r.status_code == 429:
+                    st.c["429"] += 1
+                    banned[port] = time.monotonic() + 120
+                    return
+                if r.status_code != 200:
+                    st.c[f"page_http_{r.status_code}"] += 1
+                    banned[port] = time.monotonic() + 30
+                    return
+                body = r.text
+                st.c["page_bytes"] += len(r.content)
+                if "consent.youtube.com" in str(r.url):
+                    st.c["page_consent_wall"] += 1
+                    return
+                key, ver, token = KEY_RE.search(body), VER_RE.search(body), first_token(body)
+                if not (key and ver and token):
+                    st.c["page_no_token"] += 1  # video without comments, or a bot/consent page
+                    return
+                st.c["page_ok"] += 1
+                for _ in range(pages):
+                    if not token or time.monotonic() > deadline:
+                        break
+                    payload = {"context": {"client": {"clientName": "WEB", "clientVersion": ver.group(1), "hl": "en", "gl": "US"}},
+                               "continuation": token}
+                    t1 = time.monotonic()
+                    try:
+                        r = await s.post(
+                            f"https://www.youtube.com/youtubei/v1/next?key={key.group(1)}&prettyPrint=false",
+                            json=payload,
+                            headers={**HEADERS, "Origin": "https://www.youtube.com", "X-Youtube-Client-Name": "1",
+                                     "X-Youtube-Client-Version": ver.group(1)},
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        fail("next", exc, port)
+                        return
+                    st.lat["next"].append(time.monotonic() - t1)
+                    if r.status_code == 429:
+                        st.c["429"] += 1
+                        banned[port] = time.monotonic() + 120
+                        return
+                    if r.status_code != 200:
+                        st.c[f"next_http_{r.status_code}"] += 1
+                        return
+                    text = r.text
+                    st.c["next_bytes"] += len(r.content)
+                    ids = CID_RE.findall(text)
+                    if not ids:
+                        st.c["next_no_comments"] += 1
+                        return
+                    st.c["next_ok"] += 1
+                    new = [i for i in ids if i not in st.comment_ids]
+                    st.comment_ids.update(new)
+                    if len(st.samples) < 4:
+                        m = TEXT_RE.search(text)
+                        if m:
+                            st.samples.append(m.group(1)[:110])
+                    nxt = NEXT_RE.findall(text)
+                    token = nxt[-1] if nxt else None
+
+    async def monitor() -> None:
+        last = st.window()
+        t_last = time.monotonic()
+        while time.monotonic() < deadline:
+            await asyncio.sleep(10)
+            now, cur = time.monotonic(), st.window()
+            dt = now - t_last
+            print(f"  {now - (deadline - seconds):4.0f}s | req/s {(cur[0] - last[0]) / dt:5.1f} | unique comments/s {(cur[1] - last[1]) / dt:6.1f}"
+                  f" | 429 {cur[2] - last[2]} | fail {cur[3] - last[3]}", flush=True)
+            last, t_last = cur, now
+
+    async def feeder() -> None:
+        tasks: set[asyncio.Task] = set()
+        i = 0
+        while time.monotonic() < deadline:
+            if len(tasks) < conc * 2:
+                t = asyncio.create_task(one_video(videos[i % len(videos)]))
+                tasks.add(t)
+                t.add_done_callback(tasks.discard)
+                i += 1
+            await asyncio.sleep(0.02)
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    started = time.monotonic()
+    await asyncio.gather(feeder(), monitor())
+    span = time.monotonic() - started
+    reqs, uniq = st.c["page_ok"] + st.c["next_ok"], len(st.comment_ids)
+
+    def avg(v: list[float]) -> str:
+        return f"{sum(v) / len(v):.1f}s" if v else "-"
+
+    print("\n================ YOUTUBE RESULT ================")
+    print(f"nodes: {count} | concurrency: {conc} | pages per video: {pages} | duration: {span:.0f}s | videos known: {len(videos)}")
+    print(f"requests OK: {reqs} (watch pages {st.c['page_ok']}, comment batches {st.c['next_ok']}) = {reqs / span:.1f} req/s")
+    print(f"unique comments: {uniq} = {uniq / span:.1f}/s | per comment batch: {uniq / max(1, st.c['next_ok']):.1f}")
+    print(f"latency avg: page {avg(st.lat['page'])}, next {avg(st.lat['next'])}")
+    mb = (st.c["page_bytes"] + st.c["next_bytes"]) / 1e6
+    print(f"traffic (decoded): {mb:.0f} MB = {mb / span:.1f} MB/s | page avg {st.c['page_bytes'] / max(1, st.c['page_ok']) / 1024:.0f} KB,"
+          f" next avg {st.c['next_bytes'] / max(1, st.c['next_ok']) / 1024:.0f} KB")
+    print(f"429: {st.c['429']} | timeouts: {st.c['timeout']} | errors: {st.c['err']} | consent wall: {st.c['page_consent_wall']}"
+          f" | page without token: {st.c['page_no_token']} | next without comments: {st.c['next_no_comments']}")
+    other = {k: v for k, v in st.c.items() if k.startswith(("fail_", "page_http_", "next_http_"))}
+    if other:
+        print("failures:", json.dumps(dict(sorted(other.items(), key=lambda kv: -kv[1])[:6]), ensure_ascii=False))
+    if st.samples:
+        print("sample comments:")
+        for text in st.samples:
+            print("  ", text)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
