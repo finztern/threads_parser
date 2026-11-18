@@ -35,7 +35,13 @@ STATUS_RE = re.compile(r'"playabilityStatus":\{"status":"([A-Z_]+)"(?:,"reason":
 WEB_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"  # public key of the web client (same for everybody)
 WEB_VERSION = "2.20241120.01.00"
 AGE_RE = re.compile(r'"publishedTime":"([^"]+)"')
-NEWEST_RE = re.compile(r'"title":"Newest first".{0,1500}?"token":"([^"]+)"', re.S)
+NEWEST_RE = re.compile(r'Newest first.{0,1500}?"token":"([^"]+)"', re.S)
+SECTION_RE = re.compile(r'"sectionIdentifier":"([^"]+)"')
+
+
+def snippet(text: str, needle: str, before: int = 120, after: int = 160) -> str:
+    i = text.find(needle)
+    return text[max(0, i - before):i + after].replace("\n", " ") if i >= 0 else "(not found)"
 TOKEN_RE = re.compile(r'"token":"([^"]+)"')
 NEXT_RE = re.compile(r'"continuationCommand":\{"token":"([^"]+)"')
 CID_RE = re.compile(r'"commentId":"([^"]+)"')
@@ -158,6 +164,10 @@ async def main() -> None:
                     m = STATUS_RE.search(body)
                     why = f"{m.group(1)}:{(m.group(2) or '')[:50]}" if m else ("bot_check" if "not a bot" in body else "no_status")
                     st.c[f"notoken_{why}"] += 1  # comments off / live / age or bot wall: the reason
+                    if st.c["debug_notoken"] < 2:
+                        st.c["debug_notoken"] += 1
+                        print(f"DEBUG no-token vid={vid} http={r.status_code} len={len(body)} sections={sorted(set(SECTION_RE.findall(body)))}"
+                              f"\n  head: {body[:160]!r}\n  turned-off context: {snippet(body, 'Comments are turned off')!r}", flush=True)
                     for marker in ("comments-section", "commentsEntryPointHeaderRenderer", "Comments are turned off", "isLiveContent",
                                    "liveChat", "Sign in to confirm", "engagement-panel-comments-section"):
                         if marker in body:
@@ -200,6 +210,9 @@ async def main() -> None:
                             st.c["newest_token_found"] += 1
                             continue  # the first batch is "top comments": skip it, ask again sorted by newest
                         st.c["newest_token_missing"] += 1
+                        if st.c["newest_token_missing"] <= 2:
+                            print(f"DEBUG no newest token vid={vid} len={len(text)} Newest: {snippet(text, 'Newest')!r}"
+                                  f"\n  sortMenu: {snippet(text, 'sortMenu', 20, 300)!r}", flush=True)
                     first_step = False
                     ids = CID_RE.findall(text)
                     if not ids:
