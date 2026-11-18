@@ -21,9 +21,9 @@ from collections import Counter
 from curl_cffi.requests import AsyncSession
 
 CHANNELS = [  # popular channels, only used to collect fresh video ids from their public RSS feeds
-    "UCX6OQ3DkcsbYNE6H8uQQuVA", "UCq-Fj5jknLsUf-MWSy4_brA", "UC-lHJZR3Gqxm24_Vd_AJ5Yw", "UCbCmjCuTUZos6Inko4u57UQ",
-    "UCJ5v_MCY6GNUBTO8-D3XoAg", "UCFFbwnve3yF62-tVXkTyHqg", "UCk8GzjMOrta8yxDcKfylJYw", "UCvlE5gTbOvjiolFlEm-c_Ow",
-    "UCJplp5SjeGSdVdwsfb9Q7lQ",
+    # no kids channels: "made for kids" videos have comments turned off, and related videos snowball into the same pool
+    "UCX6OQ3DkcsbYNE6H8uQQuVA", "UCq-Fj5jknLsUf-MWSy4_brA", "UC-lHJZR3Gqxm24_Vd_AJ5Yw",
+    "UCJ5v_MCY6GNUBTO8-D3XoAg", "UCFFbwnve3yF62-tVXkTyHqg",
 ]
 FALLBACK_VIDEOS = ["dQw4w9WgXcQ", "9bZkp7q19f0", "kJQP7kiw5Fk", "JGwWNGJdvx8", "RgKAFK5djSk"]
 HEADERS = {"Accept-Language": "en-US,en;q=0.9", "Cookie": "SOCS=CAI; CONSENT=PENDING+987"}
@@ -278,7 +278,10 @@ async def main() -> None:
     if ages:
         total_age = sum(ages.values())
         fresh = ages.get("second", 0) + ages.get("minute", 0)
-        print(f"comment age (relative text of YouTube): {json.dumps(ages)} | under 1 hour: {100 * fresh / total_age:.0f}% = about {fresh / span:.1f}/s")
+        day = fresh + ages.get("hour", 0)
+        print(f"comment age (relative text of YouTube): {json.dumps(ages)}")
+        print(f"under 1 hour: {100 * fresh / total_age:.0f}% = about {fresh / span:.1f}/s | under 24 hours: {100 * day / total_age:.0f}% = about {day / span:.1f}/s"
+              f" (counted over all comments received, repeats included)")
     print(f"sort newest: token found {st.c['newest_token_found']}, missing {st.c['newest_token_missing']}")
     markers = {k[7:]: v for k, v in st.c.items() if k.startswith("marker_")}
     if markers:
