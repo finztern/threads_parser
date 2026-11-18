@@ -3,7 +3,7 @@
 #
 # Run inside the parser image (it has xray and the scraper package; requests go through curl_cffi, Chrome TLS impersonation):
 #   docker compose run --rm --no-deps -v "$PWD/scripts:/app/scripts:ro" parser bash /app/scripts/yt_hot_test.sh
-# Optional env: NODES=40  CONC=80 (workers)  SECONDS_RUN=240  HOT_INTERVAL=30  EXPLORE_SHARE=0.35  MAX_PAGES=3  URL_CHECK=off|<endpoint>  VPN_SOURCE=<subscription url>
+# Optional env: NODES=40  CONC=80 (workers)  SECONDS_RUN=240  HOT_INTERVAL=30  HOT_MIN=1.0  EXPLORE_SHARE=0.7  MAX_PAGES=3  URL_CHECK=off|<endpoint>  VPN_SOURCE=<subscription url>
 #
 set -u
 

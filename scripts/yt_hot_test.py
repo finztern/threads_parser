@@ -11,7 +11,7 @@ What it does:
   * fresh comments are checked against the Exorde url-check API from this host (no proxy), URL format
     https://www.youtube.com/watch?v=<video>&lc=<comment id> (the permalink). "new to Exorde" = not reported as known.
 Usage: python3 scripts/yt_hot_test.py PORT_FIRST PORT_COUNT [seconds=240] [workers=80]
-Env: HOT_INTERVAL=30  EXPLORE_SHARE=0.35  URL_CHECK=<endpoint or "off">  MAX_PAGES=3
+Env: HOT_INTERVAL=30  HOT_MIN=1.0  EXPLORE_SHARE=0.7  URL_CHECK=<endpoint or "off">  MAX_PAGES=3
 """
 from __future__ import annotations
 
@@ -45,6 +45,8 @@ NEWEST_RE = re.compile(r'"title":"Newest(?: first)?".{0,1500}?"continuationComma
 CID_RE = re.compile(r'"commentId":"([^"]+)"')
 AGE_RE = re.compile(r'"publishedTime":"([^"]+)"')
 TEXT_RE = re.compile(r'"content":\{"content":"((?:[^"\\]|\\.)*)"')
+VIEWS_RE = re.compile(r'"originalViewCount":"(\d+)"')
+BUCKETS = [(1_000, "<1k"), (10_000, "1k-10k"), (100_000, "10k-100k"), (1_000_000, "100k-1M"), (10**18, ">1M")]
 AGE_PARSE = re.compile(r"(\d+)\s+(second|minute|hour|day|week|month|year)")
 MIN_TEXT = 7
 
@@ -81,11 +83,11 @@ def is_fresh(age: str) -> bool:
 
 
 class Video:
-    __slots__ = ("vid", "token", "newest", "last_poll", "ema", "polls", "dead")
+    __slots__ = ("vid", "token", "newest", "last_poll", "ema", "polls", "dead", "bucket")
 
     def __init__(self, vid: str) -> None:
         self.vid, self.token, self.newest = vid, None, False
-        self.last_poll, self.ema, self.polls, self.dead = 0.0, 0.0, 0, False
+        self.last_poll, self.ema, self.polls, self.dead, self.bucket = 0.0, 0.0, 0, False, "?"
 
 
 async def main() -> None:
@@ -93,8 +95,9 @@ async def main() -> None:
     seconds = float(sys.argv[3]) if len(sys.argv) > 3 else 240
     workers = int(sys.argv[4]) if len(sys.argv) > 4 else 80
     hot_interval = float(os.environ.get("HOT_INTERVAL", "30"))
-    explore_share = float(os.environ.get("EXPLORE_SHARE", "0.35"))
+    explore_share = float(os.environ.get("EXPLORE_SHARE", "0.7"))
     max_pages = int(os.environ.get("MAX_PAGES", "3"))
+    hot_min = float(os.environ.get("HOT_MIN", "1.0"))  # a video stays hot while it gives >= this many fresh comments per poll
     check_endpoint = os.environ.get("URL_CHECK", "https://url-check.exorde.network/v1/check")
     ports = list(range(first, first + count))
     banned: dict[int, float] = {}
@@ -103,7 +106,8 @@ async def main() -> None:
     samples: list[str] = []
     videos: dict[str, Video] = {}
     explore: deque[str] = deque()
-    url_queue: list[str] = []
+    url_queue: list[tuple[str, str]] = []  # (url, view bucket of the video)
+    bucket_stat: dict[str, Counter] = {}
 
     def add_video(vid: str) -> None:
         if vid not in videos and len(videos) < 100_000:
@@ -141,7 +145,7 @@ async def main() -> None:
         if random.random() >= explore_share:
             best, best_ema = None, 0.0
             for v in list(videos.values()):
-                if v.polls and not v.dead and v.ema >= 0.5 and now - v.last_poll >= hot_interval and v.ema > best_ema:
+                if v.polls and not v.dead and v.ema >= hot_min and now - v.last_poll >= hot_interval and v.ema > best_ema:
                     best, best_ema = v, v.ema
             if best:
                 return best, "hot"
@@ -175,7 +179,7 @@ async def main() -> None:
             fresh_new += 1
             c["fresh_new"] += 1
             c[f"fresh_from_{kind}"] += 1
-            url_queue.append(f"https://www.youtube.com/watch?v={vid}&lc={cid}")
+            url_queue.append((f"https://www.youtube.com/watch?v={vid}&lc={cid}", videos[vid].bucket))
             if len(samples) < 4:
                 samples.append(f"[{age}] {body[:100]}")
         return len(comments), fresh_new
@@ -190,6 +194,9 @@ async def main() -> None:
                 raise RuntimeError(f"http {status}")
             for found in VID_RE.findall(text):
                 add_video(found)
+            if m := VIEWS_RE.search(text):
+                views = int(m.group(1))
+                v.bucket = next(name for limit, name in BUCKETS if views < limit)
             token = first_token(text)
             if not token:
                 v.dead = True
@@ -224,7 +231,8 @@ async def main() -> None:
                 break  # the rest of the list is older or already seen
             token = nxt[-1]
         v.polls += 1
-        v.ema = 0.5 * v.ema + 0.5 * fresh_total if v.polls > 1 else float(fresh_total)
+        # the first poll returns the whole backlog of the last day: it must not make a video "hot"; the first re-poll is a trial
+        v.ema = hot_min * 1.5 if v.polls == 1 else 0.5 * v.ema + 0.5 * fresh_total
         c["polls_ok"] += 1
         c[f"polls_{kind}"] += 1
 
@@ -262,7 +270,9 @@ async def main() -> None:
             while time.monotonic() < deadline + 5:
                 await asyncio.sleep(1.0)
                 while url_queue:
-                    batch, url_queue[:300] = url_queue[:300], []
+                    items, url_queue[:300] = url_queue[:300], []
+                    batch = [u for u, _ in items]
+                    bucket_of = dict(items)
                     try:
                         r = await s.post(check_endpoint, json={"urls": batch})
                         data = r.json() if r.status_code == 200 else None
@@ -272,6 +282,9 @@ async def main() -> None:
                         known = {u for u in data if isinstance(u, str)}
                         c["url_known"] += len(known)
                         c["url_new"] += len(batch) - len(known)
+                        for u in batch:
+                            st = bucket_stat.setdefault(bucket_of[u], Counter())
+                            st["known" if u in known else "new"] += 1
                     else:
                         c["url_unverified"] += len(batch)
                         c["url_check_fail"] += 1
@@ -283,7 +296,7 @@ async def main() -> None:
             await asyncio.sleep(10)
             now = time.monotonic()
             dt = now - t_last
-            hot = sum(1 for v in videos.values() if v.polls and not v.dead and v.ema >= 0.5)
+            hot = sum(1 for v in videos.values() if v.polls and not v.dead and v.ema >= hot_min)
             print(f"  {now - t_start:4.0f}s | polls/s {(c['polls_ok'] - last['polls_ok']) / dt:5.1f} | fresh/s {(c['fresh_new'] - last['fresh_new']) / dt:6.1f}"
                   f" | new to Exorde/s {(c['url_new'] - last['url_new']) / dt:6.1f} | hot {hot} | videos {len(videos)} | fail {c['err'] + c['timeout'] - last['err'] - last['timeout']}",
                   flush=True)
@@ -304,6 +317,13 @@ async def main() -> None:
         total = c["url_known"] + c["url_new"]
         print(f"url check: known to Exorde {c['url_known']}, NEW to Exorde {c['url_new']} = {c['url_new'] / span:.1f}/s"
               f" ({100 * c['url_new'] / max(1, total):.0f}% of checked) | unverified {c['url_unverified']} (check failures {c['url_check_fail']})")
+    if bucket_stat:
+        print("new to Exorde by video views (fresh comments checked | new | known share):")
+        for _, name in BUCKETS + [(0, "?")]:
+            st = bucket_stat.get(name)
+            if st:
+                tot = st["known"] + st["new"]
+                print(f"   {name:>9}: {tot:6d} | {st['new']:6d} | known {100 * st['known'] / tot:3.0f}%")
     print(f"traffic (decoded): {mb:.0f} MB = {mb / span:.1f} MB/s | per comment request {c['bytes_comments'] / max(1, c['req_comments']) / 1024:.0f} KB")
     print(f"timeouts {c['timeout']}, errors {c['err']}")
     fails = {k[5:]: v for k, v in c.items() if k.startswith("fail_")}
