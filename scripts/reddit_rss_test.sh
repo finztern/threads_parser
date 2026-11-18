@@ -97,15 +97,18 @@ from curl_cffi import requests
 
 sub, port, out, limit = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 proxies = None if port == "direct" else {"http": f"socks5h://127.0.0.1:{port}", "https": f"socks5h://127.0.0.1:{port}"}
-url = f"https://www.reddit.com/r/{sub}/comments/.rss?limit={limit}"
+urls = [f"https://www.reddit.com/r/{sub}/comments/.rss?limit={limit}", f"https://www.reddit.com/r/{sub}/comments.rss?limit={limit}"]
 headers = {"Accept": "application/atom+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9"}
 t0 = time.time()
 code, body = 0, b""
-try:
-    r = requests.get(url, impersonate="chrome124", proxies=proxies, headers=headers, timeout=25)
-    code, body = r.status_code, r.content
-except Exception:
-    pass
+for url in urls:  # second form is tried only on 404
+    try:
+        r = requests.get(url, impersonate="chrome", proxies=proxies, headers=headers, timeout=25)
+        code, body = r.status_code, r.content
+    except Exception:
+        code, body = 0, b""
+    if code != 404:
+        break
 open(out + ".body", "wb").write(body)
 open(out + ".meta", "w").write(f"{code:03d} {time.time() - t0:.2f} {len(body)} {port}\n")
 PY
@@ -143,11 +146,11 @@ run_pass() {  # run_pass NAME NODE_SHIFT SUB...
 }
 
 echo
-echo "direct from this machine (no VPN), r/news:"
-fetch news direct "$WORK/direct"
+echo "direct from this machine (no VPN), multi-feed AskReddit+news+worldnews+funny+gaming:"
+fetch "AskReddit+news+worldnews+funny+gaming" direct "$WORK/direct"
 echo "  -> $(classify "$WORK/direct") ($(cut -d' ' -f1,2 "$WORK/direct.meta" | tr ' ' '/'))"
 
-read -r -a ALL_SUBS <<< "$SUBS"
+read -r -a ALL_SUBS <<< "$(echo $SUBS)"
 echo
 echo "pass 1: ${#ALL_SUBS[@]} subreddits, each through its own node ..."
 run_pass p1 0 "${ALL_SUBS[@]}"
