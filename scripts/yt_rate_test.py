@@ -6,7 +6,7 @@ Flow per video (one curl_cffi session per video = one TCP/TLS connection, Chrome
 Comments are counted by commentId. Run through scripts/yt_rate_test.sh (it starts the nodes).
 Bootstrap modes: "page" (watch page, ~2.5 MB) or "next" (POST youtubei/v1/next with videoId, much lighter). Both also collect the
 ids of related videos, so the video list grows by itself (snowball) and comments stop repeating.
-Usage: python3 scripts/yt_rate_test.py PORT_FIRST PORT_COUNT [seconds] [concurrency] [pages_per_video] [page|next]
+Usage: python3 scripts/yt_rate_test.py PORT_FIRST PORT_COUNT [seconds] [concurrency] [pages_per_video] [page|next] [top|new]
 """
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ VID_RE = re.compile(r'"videoId":"([A-Za-z0-9_-]{11})"')
 STATUS_RE = re.compile(r'"playabilityStatus":\{"status":"([A-Z_]+)"(?:,"reason":"([^"]*)")?')
 WEB_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"  # public key of the web client (same for everybody)
 WEB_VERSION = "2.20241120.01.00"
+AGE_RE = re.compile(r'"publishedTime":"([^"]+)"')
+NEWEST_RE = re.compile(r'"title":"Newest first".{0,1500}?"token":"([^"]+)"', re.S)
 TOKEN_RE = re.compile(r'"token":"([^"]+)"')
 NEXT_RE = re.compile(r'"continuationCommand":\{"token":"([^"]+)"')
 CID_RE = re.compile(r'"commentId":"([^"]+)"')
@@ -68,6 +70,7 @@ async def main() -> None:
     conc = int(sys.argv[4]) if len(sys.argv) > 4 else 80
     pages = int(sys.argv[5]) if len(sys.argv) > 5 else 6
     boot = sys.argv[6] if len(sys.argv) > 6 else "next"
+    sort = sys.argv[7] if len(sys.argv) > 7 else "new"
     ports = list(range(first, first + count))
     banned: dict[int, float] = {}
     st = Stats()
@@ -155,8 +158,13 @@ async def main() -> None:
                     m = STATUS_RE.search(body)
                     why = f"{m.group(1)}:{(m.group(2) or '')[:50]}" if m else ("bot_check" if "not a bot" in body else "no_status")
                     st.c[f"notoken_{why}"] += 1  # comments off / live / age or bot wall: the reason
+                    for marker in ("comments-section", "commentsEntryPointHeaderRenderer", "Comments are turned off", "isLiveContent",
+                                   "liveChat", "Sign in to confirm", "engagement-panel-comments-section"):
+                        if marker in body:
+                            st.c[f"marker_{marker}"] += 1
                     return
                 st.c["page_ok"] += 1
+                first_step = True
                 for _ in range(pages):
                     if not token or time.monotonic() > deadline:
                         break
@@ -183,6 +191,16 @@ async def main() -> None:
                         return
                     text = r.text
                     st.c["next_bytes"] += len(r.content)
+                    if sort == "new" and first_step:
+                        first_step = False
+                        newest = NEWEST_RE.search(text)
+                        st.c["sort_probe"] += 1
+                        if newest:
+                            token = newest.group(1)
+                            st.c["newest_token_found"] += 1
+                            continue  # the first batch is "top comments": skip it, ask again sorted by newest
+                        st.c["newest_token_missing"] += 1
+                    first_step = False
                     ids = CID_RE.findall(text)
                     if not ids:
                         st.c["next_no_comments"] += 1
@@ -191,6 +209,9 @@ async def main() -> None:
                     st.c["raw_comments"] += len(ids)
                     new = [i for i in ids if i not in st.comment_ids]
                     st.comment_ids.update(new)
+                    for age in AGE_RE.findall(text):
+                        unit = re.search(r"(second|minute|hour|day|week|month|year)", age)
+                        st.c[f"age_{unit.group(1) if unit else 'other'}"] += 1
                     if len(st.samples) < 4:
                         m = TEXT_RE.search(text)
                         if m:
@@ -240,6 +261,15 @@ async def main() -> None:
           f" next avg {st.c['next_bytes'] / max(1, st.c['next_ok']) / 1024:.0f} KB")
     print(f"429: {st.c['429']} | timeouts: {st.c['timeout']} | errors: {st.c['err']} | consent wall: {st.c['page_consent_wall']}"
           f" | page without token: {st.c['page_no_token']} | next without comments: {st.c['next_no_comments']}")
+    ages = {k[4:]: v for k, v in st.c.items() if k.startswith("age_")}
+    if ages:
+        total_age = sum(ages.values())
+        fresh = ages.get("second", 0) + ages.get("minute", 0)
+        print(f"comment age (relative text of YouTube): {json.dumps(ages)} | under 1 hour: {100 * fresh / total_age:.0f}% = about {fresh / span:.1f}/s")
+    print(f"sort newest: token found {st.c['newest_token_found']}, missing {st.c['newest_token_missing']}")
+    markers = {k[7:]: v for k, v in st.c.items() if k.startswith("marker_")}
+    if markers:
+        print("pages without comments token contain:", json.dumps(markers))
     other = {k: v for k, v in st.c.items() if k.startswith(("fail_", "page_http_", "next_http_", "notoken_"))}
     if other:
         print("failures:", json.dumps(dict(sorted(other.items(), key=lambda kv: -kv[1])[:9]), ensure_ascii=False))
