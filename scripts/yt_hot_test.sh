@@ -87,4 +87,11 @@ echo "$good nodes started (SOCKS ports $BASE_PORT..$((BASE_PORT + good - 1)))"
 # ---- 2. the test ----
 echo
 echo "running ${SECONDS_RUN}s: $CONC parallel videos through $good nodes ..."
+# real (wire) traffic of this container: counters of the non-loopback interfaces before and after
+wire() { awk -F'[: ]+' '$2 != "lo" && NR > 2 {rx += $3; tx += $11} END {print rx, tx}' /proc/net/dev; }
+read -r RX0 TX0 < <(wire)
+T0=$(date +%s)
 python3 /app/scripts/yt_hot_test.py "$BASE_PORT" "$good" "$SECONDS_RUN" "$CONC"
+read -r RX1 TX1 < <(wire)
+SPAN=$(( $(date +%s) - T0 ))
+echo "wire traffic of the whole run (incl. node start): received $(( (RX1 - RX0) / 1000000 )) MB, sent $(( (TX1 - TX0) / 1000000 )) MB in ${SPAN}s = $(( (RX1 - RX0) * 8 / 1000000 / SPAN )) Mbit/s in, $(( (TX1 - TX0) * 8 / 1000000 / SPAN )) Mbit/s out"
