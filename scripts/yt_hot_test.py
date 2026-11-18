@@ -47,6 +47,40 @@ AGE_RE = re.compile(r'"publishedTime":"([^"]+)"')
 TEXT_RE = re.compile(r'"content":\{"content":"((?:[^"\\]|\\.)*)"')
 VIEWS_RE = re.compile(r'"originalViewCount":"(\d+)"')
 BUCKETS = [(1_000, "<1k"), (10_000, "1k-10k"), (100_000, "10k-100k"), (1_000_000, "100k-1M"), (10**18, ">1M")]
+VAGE_RE = re.compile(r'"relativeDateText":\{"simpleText":"([^"]+)"')
+
+
+def script_of(text: str) -> str:
+    """Rough writing system of a comment: Exorde dedup depends on who else collects which language."""
+    for ch in text:
+        o = ord(ch)
+        if ch.isalpha():
+            if o < 0x250:
+                return "latin"
+            if 0x400 <= o < 0x530:
+                return "cyrillic"
+            if 0x600 <= o < 0x780:
+                return "arabic"
+            if 0x900 <= o < 0xE00:
+                return "indic"
+            if 0xE00 <= o < 0xE80:
+                return "thai"
+            if 0x3040 <= o < 0xA000 or 0xAC00 <= o < 0xD7B0:
+                return "cjk_kana_hangul"
+            return "other"
+    return "no_letters"
+
+
+def video_age_bucket(text: str) -> str:
+    m = AGE_PARSE.search(text)
+    if not m:
+        return "?"
+    n, unit = int(m.group(1)), m.group(2)
+    if unit in ("second", "minute", "hour"):
+        return "video <1d"
+    return "video 1-7d" if unit == "day" and n < 7 else "video older"
+
+
 AGE_PARSE = re.compile(r"(\d+)\s+(second|minute|hour|day|week|month|year)")
 MIN_TEXT = 7
 
@@ -83,11 +117,11 @@ def is_fresh(age: str) -> bool:
 
 
 class Video:
-    __slots__ = ("vid", "token", "newest", "last_poll", "ema", "polls", "dead", "bucket")
+    __slots__ = ("vid", "token", "newest", "last_poll", "ema", "polls", "dead", "bucket", "vage")
 
     def __init__(self, vid: str) -> None:
         self.vid, self.token, self.newest = vid, None, False
-        self.last_poll, self.ema, self.polls, self.dead, self.bucket = 0.0, 0.0, 0, False, "?"
+        self.last_poll, self.ema, self.polls, self.dead, self.bucket, self.vage = 0.0, 0.0, 0, False, "?", "?"
 
 
 async def main() -> None:
@@ -106,8 +140,8 @@ async def main() -> None:
     samples: list[str] = []
     videos: dict[str, Video] = {}
     explore: deque[str] = deque()
-    url_queue: list[tuple[str, str]] = []  # (url, view bucket of the video)
-    bucket_stat: dict[str, Counter] = {}
+    url_queue: list[tuple[str, tuple[str, str, str]]] = []  # (url, (views bucket, video age bucket, script))
+    bucket_stat: dict[str, dict[str, Counter]] = {"views": {}, "video age": {}, "script": {}}
 
     def add_video(vid: str) -> None:
         if vid not in videos and len(videos) < 100_000:
@@ -179,7 +213,7 @@ async def main() -> None:
             fresh_new += 1
             c["fresh_new"] += 1
             c[f"fresh_from_{kind}"] += 1
-            url_queue.append((f"https://www.youtube.com/watch?v={vid}&lc={cid}", videos[vid].bucket))
+            url_queue.append((f"https://www.youtube.com/watch?v={vid}&lc={cid}", (videos[vid].bucket, videos[vid].vage, script_of(body))))
             if len(samples) < 4:
                 samples.append(f"[{age}] {body[:100]}")
         return len(comments), fresh_new
@@ -197,6 +231,8 @@ async def main() -> None:
             if m := VIEWS_RE.search(text):
                 views = int(m.group(1))
                 v.bucket = next(name for limit, name in BUCKETS if views < limit)
+            if m := VAGE_RE.search(text):
+                v.vage = video_age_bucket(m.group(1))
             token = first_token(text)
             if not token:
                 v.dead = True
@@ -283,8 +319,8 @@ async def main() -> None:
                         c["url_known"] += len(known)
                         c["url_new"] += len(batch) - len(known)
                         for u in batch:
-                            st = bucket_stat.setdefault(bucket_of[u], Counter())
-                            st["known" if u in known else "new"] += 1
+                            for dim, label in zip(("views", "video age", "script"), bucket_of[u]):
+                                bucket_stat[dim].setdefault(label, Counter())["known" if u in known else "new"] += 1
                     else:
                         c["url_unverified"] += len(batch)
                         c["url_check_fail"] += 1
@@ -317,13 +353,13 @@ async def main() -> None:
         total = c["url_known"] + c["url_new"]
         print(f"url check: known to Exorde {c['url_known']}, NEW to Exorde {c['url_new']} = {c['url_new'] / span:.1f}/s"
               f" ({100 * c['url_new'] / max(1, total):.0f}% of checked) | unverified {c['url_unverified']} (check failures {c['url_check_fail']})")
-    if bucket_stat:
-        print("new to Exorde by video views (fresh comments checked | new | known share):")
-        for _, name in BUCKETS + [(0, "?")]:
-            st = bucket_stat.get(name)
-            if st:
+    if check_endpoint != "off":
+        print("new to Exorde by video views / video age / comment script (fresh comments checked | new | known share):")
+        for dim, labels in bucket_stat.items():
+            for label, st in sorted(labels.items(), key=lambda kv: -(kv[1]["known"] + kv[1]["new"])):
                 tot = st["known"] + st["new"]
-                print(f"   {name:>9}: {tot:6d} | {st['new']:6d} | known {100 * st['known'] / tot:3.0f}%")
+                if tot >= 30:
+                    print(f"   {dim:>9} {label:>16}: {tot:6d} | {st['new']:6d} | known {100 * st['known'] / tot:3.0f}%")
     print(f"traffic (decoded): {mb:.0f} MB = {mb / span:.1f} MB/s | per comment request {c['bytes_comments'] / max(1, c['req_comments']) / 1024:.0f} KB")
     print(f"timeouts {c['timeout']}, errors {c['err']}")
     fails = {k[5:]: v for k, v in c.items() if k.startswith("fail_")}
