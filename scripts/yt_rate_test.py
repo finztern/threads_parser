@@ -4,7 +4,9 @@ Flow per video (one curl_cffi session per video = one TCP/TLS connection, Chrome
   1. GET watch page -> InnerTube key, client version and the first comments continuation token
   2. POST youtubei/v1/next with the token, then follow the next continuation tokens (pagination) a few times
 Comments are counted by commentId. Run through scripts/yt_rate_test.sh (it starts the nodes).
-Usage: python3 scripts/yt_rate_test.py PORT_FIRST PORT_COUNT [seconds] [concurrency] [pages_per_video]
+Bootstrap modes: "page" (watch page, ~2.5 MB) or "next" (POST youtubei/v1/next with videoId, much lighter). Both also collect the
+ids of related videos, so the video list grows by itself (snowball) and comments stop repeating.
+Usage: python3 scripts/yt_rate_test.py PORT_FIRST PORT_COUNT [seconds] [concurrency] [pages_per_video] [page|next]
 """
 from __future__ import annotations
 
@@ -28,6 +30,10 @@ HEADERS = {"Accept-Language": "en-US,en;q=0.9", "Cookie": "SOCS=CAI; CONSENT=PEN
 
 KEY_RE = re.compile(r'"INNERTUBE_API_KEY":"([^"]+)"')
 VER_RE = re.compile(r'"INNERTUBE_CONTEXT_CLIENT_VERSION":"([^"]+)"')
+VID_RE = re.compile(r'"videoId":"([A-Za-z0-9_-]{11})"')
+STATUS_RE = re.compile(r'"playabilityStatus":\{"status":"([A-Z_]+)"(?:,"reason":"([^"]*)")?')
+WEB_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"  # public key of the web client (same for everybody)
+WEB_VERSION = "2.20241120.01.00"
 TOKEN_RE = re.compile(r'"token":"([^"]+)"')
 NEXT_RE = re.compile(r'"continuationCommand":\{"token":"([^"]+)"')
 CID_RE = re.compile(r'"commentId":"([^"]+)"')
@@ -61,6 +67,7 @@ async def main() -> None:
     seconds = float(sys.argv[3]) if len(sys.argv) > 3 else 90
     conc = int(sys.argv[4]) if len(sys.argv) > 4 else 80
     pages = int(sys.argv[5]) if len(sys.argv) > 5 else 6
+    boot = sys.argv[6] if len(sys.argv) > 6 else "next"
     ports = list(range(first, first + count))
     banned: dict[int, float] = {}
     st = Stats()
@@ -87,7 +94,8 @@ async def main() -> None:
 
     await asyncio.gather(*(rss(c) for c in CHANNELS))
     print(f"video ids from RSS: {len(videos)} ({'fallback list added' if len(videos) < 20 else 'ok'})")
-    videos = list(dict.fromkeys(videos + FALLBACK_VIDEOS))
+    videos[:] = list(dict.fromkeys(videos + FALLBACK_VIDEOS))
+    known = set(videos)
 
     deadline = time.monotonic() + seconds
     sem = asyncio.Semaphore(conc)
@@ -106,7 +114,16 @@ async def main() -> None:
             async with AsyncSession(impersonate="chrome", timeout=20, proxies=proxies(port)) as s:
                 t0 = time.monotonic()
                 try:
-                    r = await s.get(f"https://www.youtube.com/watch?v={vid}", headers=HEADERS)
+                    if boot == "next":
+                        r = await s.post(
+                            f"https://www.youtube.com/youtubei/v1/next?key={WEB_KEY}&prettyPrint=false",
+                            json={"context": {"client": {"clientName": "WEB", "clientVersion": WEB_VERSION, "hl": "en", "gl": "US"}},
+                                  "videoId": vid},
+                            headers={**HEADERS, "Origin": "https://www.youtube.com", "X-Youtube-Client-Name": "1",
+                                     "X-Youtube-Client-Version": WEB_VERSION},
+                        )
+                    else:
+                        r = await s.get(f"https://www.youtube.com/watch?v={vid}", headers=HEADERS)
                 except Exception as exc:  # noqa: BLE001
                     fail("page", exc, port)
                     return
@@ -124,23 +141,34 @@ async def main() -> None:
                 if "consent.youtube.com" in str(r.url):
                     st.c["page_consent_wall"] += 1
                     return
-                key, ver, token = KEY_RE.search(body), VER_RE.search(body), first_token(body)
+                for found in VID_RE.findall(body):  # related videos: the list grows by itself
+                    if found not in known and len(videos) < 50000:
+                        known.add(found)
+                        videos.append(found)
+                if boot == "next":
+                    key, ver, token = WEB_KEY, WEB_VERSION, first_token(body)
+                else:
+                    km, vm = KEY_RE.search(body), VER_RE.search(body)
+                    key, ver, token = (km.group(1) if km else None), (vm.group(1) if vm else None), first_token(body)
                 if not (key and ver and token):
-                    st.c["page_no_token"] += 1  # video without comments, or a bot/consent page
+                    st.c["page_no_token"] += 1
+                    m = STATUS_RE.search(body)
+                    why = f"{m.group(1)}:{(m.group(2) or '')[:50]}" if m else ("bot_check" if "not a bot" in body else "no_status")
+                    st.c[f"notoken_{why}"] += 1  # comments off / live / age or bot wall: the reason
                     return
                 st.c["page_ok"] += 1
                 for _ in range(pages):
                     if not token or time.monotonic() > deadline:
                         break
-                    payload = {"context": {"client": {"clientName": "WEB", "clientVersion": ver.group(1), "hl": "en", "gl": "US"}},
+                    payload = {"context": {"client": {"clientName": "WEB", "clientVersion": ver, "hl": "en", "gl": "US"}},
                                "continuation": token}
                     t1 = time.monotonic()
                     try:
                         r = await s.post(
-                            f"https://www.youtube.com/youtubei/v1/next?key={key.group(1)}&prettyPrint=false",
+                            f"https://www.youtube.com/youtubei/v1/next?key={key}&prettyPrint=false",
                             json=payload,
                             headers={**HEADERS, "Origin": "https://www.youtube.com", "X-Youtube-Client-Name": "1",
-                                     "X-Youtube-Client-Version": ver.group(1)},
+                                     "X-Youtube-Client-Version": ver},
                         )
                     except Exception as exc:  # noqa: BLE001
                         fail("next", exc, port)
@@ -160,6 +188,7 @@ async def main() -> None:
                         st.c["next_no_comments"] += 1
                         return
                     st.c["next_ok"] += 1
+                    st.c["raw_comments"] += len(ids)
                     new = [i for i in ids if i not in st.comment_ids]
                     st.comment_ids.update(new)
                     if len(st.samples) < 4:
@@ -185,7 +214,7 @@ async def main() -> None:
         i = 0
         while time.monotonic() < deadline:
             if len(tasks) < conc * 2:
-                t = asyncio.create_task(one_video(videos[i % len(videos)]))
+                t = asyncio.create_task(one_video(videos[i % len(videos)] if i < len(videos) else random.choice(videos)))
                 tasks.add(t)
                 t.add_done_callback(tasks.discard)
                 i += 1
@@ -203,16 +232,17 @@ async def main() -> None:
     print("\n================ YOUTUBE RESULT ================")
     print(f"nodes: {count} | concurrency: {conc} | pages per video: {pages} | duration: {span:.0f}s | videos known: {len(videos)}")
     print(f"requests OK: {reqs} (watch pages {st.c['page_ok']}, comment batches {st.c['next_ok']}) = {reqs / span:.1f} req/s")
-    print(f"unique comments: {uniq} = {uniq / span:.1f}/s | per comment batch: {uniq / max(1, st.c['next_ok']):.1f}")
+    print(f"bootstrap mode: {boot} | videos known at the end: {len(videos)}")
+    print(f"unique comments: {uniq} = {uniq / span:.1f}/s | raw comments per batch: {st.c['raw_comments'] / max(1, st.c['next_ok']):.1f}")
     print(f"latency avg: page {avg(st.lat['page'])}, next {avg(st.lat['next'])}")
     mb = (st.c["page_bytes"] + st.c["next_bytes"]) / 1e6
     print(f"traffic (decoded): {mb:.0f} MB = {mb / span:.1f} MB/s | page avg {st.c['page_bytes'] / max(1, st.c['page_ok']) / 1024:.0f} KB,"
           f" next avg {st.c['next_bytes'] / max(1, st.c['next_ok']) / 1024:.0f} KB")
     print(f"429: {st.c['429']} | timeouts: {st.c['timeout']} | errors: {st.c['err']} | consent wall: {st.c['page_consent_wall']}"
           f" | page without token: {st.c['page_no_token']} | next without comments: {st.c['next_no_comments']}")
-    other = {k: v for k, v in st.c.items() if k.startswith(("fail_", "page_http_", "next_http_"))}
+    other = {k: v for k, v in st.c.items() if k.startswith(("fail_", "page_http_", "next_http_", "notoken_"))}
     if other:
-        print("failures:", json.dumps(dict(sorted(other.items(), key=lambda kv: -kv[1])[:6]), ensure_ascii=False))
+        print("failures:", json.dumps(dict(sorted(other.items(), key=lambda kv: -kv[1])[:9]), ensure_ascii=False))
     if st.samples:
         print("sample comments:")
         for text in st.samples:

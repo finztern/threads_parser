@@ -3,7 +3,7 @@
 #
 # Run inside the parser image (it has xray and the scraper package; requests go through curl_cffi, Chrome TLS impersonation):
 #   docker compose run --rm --no-deps -v "$PWD/scripts:/app/scripts:ro" parser bash /app/scripts/yt_rate_test.sh
-# Optional env: NODES=40 (nodes to start)  CONC=80 (parallel videos)  SECONDS_RUN=90  PAGES=6 (comment batches per video)  VPN_SOURCE=<subscription url>
+# Optional env: NODES=40 (nodes to start)  CONC=80 (parallel videos)  SECONDS_RUN=90  PAGES=6 (comment batches per video)  BOOT=next|page (how a video is opened)  VPN_SOURCE=<subscription url>
 #
 set -u
 
@@ -11,6 +11,7 @@ NODES="${NODES:-40}"
 CONC="${CONC:-80}"
 SECONDS_RUN="${SECONDS_RUN:-90}"
 PAGES="${PAGES:-6}"
+BOOT="${BOOT:-next}"
 VPN_SOURCE="${VPN_SOURCE:-https://github.com/Au1rxx/free-vpn-subscriptions/raw/main/output/v2ray-base64.txt}"
 BASE_PORT=13000
 WORK="$(mktemp -d)"
@@ -85,4 +86,4 @@ echo "$good nodes started (SOCKS ports $BASE_PORT..$((BASE_PORT + good - 1)))"
 # ---- 2. the test ----
 echo
 echo "running ${SECONDS_RUN}s: $CONC parallel videos through $good nodes ..."
-python3 /app/scripts/yt_rate_test.py "$BASE_PORT" "$good" "$SECONDS_RUN" "$CONC" "$PAGES"
+python3 /app/scripts/yt_rate_test.py "$BASE_PORT" "$good" "$SECONDS_RUN" "$CONC" "$PAGES" "$BOOT"
