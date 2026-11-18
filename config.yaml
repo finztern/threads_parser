@@ -46,10 +46,11 @@ proxy_refresh_minutes: 30
 # open a real Threads page and mixes them into the static pool (needs static_proxy_share > 0). Empty list = off.
 vpn_sources:
   - "https://github.com/Au1rxx/free-vpn-subscriptions/raw/main/output/v2ray-base64.txt"
+  - "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/All_Configs_Sub.txt"
 vpn_refresh_minutes: 60
-vpn_candidates: 800
-vpn_nodes: 250
-vpn_keep: 150
+vpn_candidates: 2000
+vpn_nodes: 600
+vpn_keep: 300
 vpn_max_latency_seconds: 6.0
 vpn_base_port: 12000
 proxy_probe_url: "https://www.threads.com/robots.txt"
