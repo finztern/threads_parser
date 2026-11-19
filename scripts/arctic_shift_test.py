@@ -5,7 +5,7 @@ Phase A: quick probes - does a query without subreddit work (a Reddit-wide strea
 Phase B: sustained polling of 50 busy subreddits round-robin: comments per second, lag at first sight, Exorde url-check dedup.
 Run from the parser image (curl_cffi inside), directly from this host:
   docker compose run --rm --no-deps -v "$PWD/scripts:/app/scripts:ro" parser python3 /app/scripts/arctic_shift_test.py
-Env: SECONDS_RUN=90  RPS=3  URL_CHECK=<endpoint or "off">
+Env: SECONDS_RUN=90  RPS=3  WARMUP=40 (seconds ignored for the "steady" numbers: the first pass returns the old backlog)  URL_CHECK=<endpoint or "off">
 """
 from __future__ import annotations
 
@@ -56,6 +56,7 @@ async def get(session: AsyncSession, params: str) -> tuple[int, list[dict], dict
 async def main() -> None:
     seconds = float(os.environ.get("SECONDS_RUN", "90"))
     rps = float(os.environ.get("RPS", "3"))
+    warmup = float(os.environ.get("WARMUP", "40"))
     check_endpoint = os.environ.get("URL_CHECK", "https://url-check.exorde.network/v1/check")
     async with AsyncSession(impersonate="chrome", timeout=30) as session:
         print("---- phase A: probes ----")
@@ -83,7 +84,9 @@ async def main() -> None:
         c: Counter[str] = Counter()
         seen: set[str] = set()
         lags: list[float] = []
-        urls: list[str] = []
+        urls: list[tuple[str, bool]] = []  # (url, collected after the warm-up)
+        per_sub: Counter[str] = Counter()
+        steady_lags: list[float] = []
         samples: list[str] = []
         statuses: Counter[str] = Counter()
         started = time.monotonic()
@@ -100,6 +103,9 @@ async def main() -> None:
                 return
             statuses[f"http_{status}"] += 1
             c["latency_sum"] += dt
+            if status != 200 and c[f"shown_{status}"] < 2:
+                c[f"shown_{status}"] += 1
+                print(f"  note: http {status} for subreddit={sub}: {err}", flush=True)
             if status == 429:
                 pause_until = time.monotonic() + float(headers.get("retry-after", 10) or 10)
                 return
@@ -116,9 +122,15 @@ async def main() -> None:
                     c["too_short_or_deleted"] += 1
                     continue
                 c["unique_text"] += 1
+                steady = time.monotonic() - started > warmup
                 if item.get("created_utc"):
                     lags.append(time.time() - float(item["created_utc"]))
-                urls.append(comment_url(item))
+                    if steady:
+                        steady_lags.append(lags[-1])
+                if steady:
+                    c["steady_unique"] += 1
+                    per_sub[sub] += 1
+                urls.append((comment_url(item), steady))
                 if len(samples) < 3:
                     samples.append(f"r/{item.get('subreddit')} u/{item.get('author')} {lags[-1] if lags else 0:.0f}s ago: {body[:80]}")
             if len(data) == 100 and full == 100:
@@ -131,7 +143,9 @@ async def main() -> None:
                 while time.monotonic() < deadline + 5:
                     await asyncio.sleep(1.0)
                     while urls:
-                        batch, urls[:300] = urls[:300], []
+                        items, urls[:300] = urls[:300], []
+                        batch = [u for u, _ in items]
+                        steady_of = dict(items)
                         try:
                             r = await s.post(check_endpoint, json={"urls": batch})
                             data = r.json() if r.status_code == 200 else None
@@ -141,6 +155,7 @@ async def main() -> None:
                             known = {u for u in data if isinstance(u, str)}
                             c["url_known"] += len(known)
                             c["url_new"] += len(batch) - len(known)
+                            c["steady_new"] += sum(1 for u in batch if u not in known and steady_of[u])
                         else:
                             c["url_unverified"] += len(batch)
 
@@ -165,6 +180,13 @@ async def main() -> None:
         print(f"duration {span:.0f}s | requests {reqs} = {reqs / span:.1f}/s | statuses {dict(statuses)} | avg latency {c['latency_sum'] / max(1, reqs):.1f}s")
         print(f"unique text comments {c['unique_text']} = {c['unique_text'] / span:.1f}/s | repeats {c['repeat']} | short/deleted {c['too_short_or_deleted']}"
               f" | pages entirely new (more than 100 per poll interval): {c['pages_all_new']}")
+        steady_span = max(1.0, span - warmup)
+        print(f"STEADY (after {warmup:.0f}s warm-up, {steady_span:.0f}s): unique text comments {c['steady_unique']} = {c['steady_unique'] / steady_span:.1f}/s"
+              + (f" | NEW to Exorde {c['steady_new']} = {c['steady_new'] / steady_span:.1f}/s" if check_endpoint != "off" else ""))
+        if steady_lags:
+            steady_lags.sort()
+            print(f"steady age at first sight: median {statistics.median(steady_lags):.0f}s, p90 {steady_lags[int(len(steady_lags) * 0.9)]:.0f}s")
+        print("busiest subreddits after warm-up:", ", ".join(f"{k}:{v}" for k, v in per_sub.most_common(8)))
         if lags:
             lags.sort()
             print(f"age at first sight (ingest lag + poll interval): median {statistics.median(lags):.0f}s, p90 {lags[int(len(lags) * 0.9)]:.0f}s, min {lags[0]:.0f}s")
