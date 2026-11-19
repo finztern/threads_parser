@@ -4,7 +4,8 @@ Each worker keeps one curl_cffi session (Chrome TLS impersonation) on one node a
 subreddits round-robin (the least recently polled first). Comments are parsed from div.thing (t1_...): author, permalink, real <time>
 datetime, text. Fresh unique comments are checked against the Exorde url-check API (direct from this host).
 Usage: python3 scripts/reddit_html_test.py PORT_FIRST PORT_COUNT [seconds=180] [workers=40]
-Env: URL_CHECK=<endpoint or "off">  VARIANTS="plain,limit100" (which URL forms are mixed)
+Direct mode (no nodes, e.g. on the home PC): DIRECT=1 RPS=2 python3 scripts/reddit_html_test.py 0 1 180 8
+Env: URL_CHECK=<endpoint or "off">  VARIANTS="plain,limit100" (which URL forms are mixed)  DIRECT=1  RPS=<global requests/s limit, direct mode>
 """
 from __future__ import annotations
 
@@ -67,7 +68,10 @@ async def main() -> None:
     workers = int(sys.argv[4]) if len(sys.argv) > 4 else 40
     check_endpoint = os.environ.get("URL_CHECK", "https://url-check.exorde.network/v1/check")
     variants = [v for v in os.environ.get("VARIANTS", "plain,limit100").split(",") if v in VARIANT_URLS]
-    ports = list(range(first, first + count))
+    direct = os.environ.get("DIRECT") == "1"
+    rps = float(os.environ.get("RPS", "2"))
+    slot = [0.0]  # global pacing in direct mode: one IP must not hammer Reddit
+    ports = [0] if direct else list(range(first, first + count))
     banned: dict[int, float] = {}
     c: Counter[str] = Counter()
     seen: set[str] = set()
@@ -83,7 +87,15 @@ async def main() -> None:
         live = [p for p in ports if banned.get(p, 0) < now]
         return random.choice(live or ports)
 
-    def proxies(port: int) -> dict:
+    async def pace() -> None:
+        if direct:
+            now = time.monotonic()
+            slot[0] = max(slot[0], now) + 1.0 / rps
+            await asyncio.sleep(max(0.0, slot[0] - 1.0 / rps - now))
+
+    def proxies(port: int) -> dict | None:
+        if direct:
+            return None
         return {"http": f"socks5h://127.0.0.1:{port}", "https": f"socks5h://127.0.0.1:{port}"}
 
     def next_sub() -> str:
@@ -96,6 +108,7 @@ async def main() -> None:
         session = AsyncSession(impersonate="chrome", timeout=20, proxies=proxies(port))
         try:
             while time.monotonic() < deadline:
+                await pace()
                 sub, variant = next_sub(), random.choice(variants)
                 t0 = time.monotonic()
                 try:
@@ -201,7 +214,7 @@ async def main() -> None:
         return f"{sum(v) / len(v):.1f}s" if v else "-"
 
     print("\n================ REDDIT HTML RESULT ================")
-    print(f"nodes: {count} | workers: {workers} | duration: {span:.0f}s | subreddits: {len(SUBS)}")
+    print(f"{'DIRECT (own IP), rate limit ' + str(rps) + '/s' if direct else 'nodes: ' + str(count)} | workers: {workers} | duration: {span:.0f}s | subreddits: {len(SUBS)}")
     for v in variants:
         reqs = c[f"req_{v}"]
         print(f"variant {v:>8}: requests {reqs}, pages with comments {c[f'ok_{v}']} ({100 * c[f'ok_{v}'] / max(1, reqs):.0f}%),"
