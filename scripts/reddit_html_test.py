@@ -9,6 +9,7 @@ Env: URL_CHECK=<endpoint or "off">  VARIANTS="plain,limit100" (which URL forms a
      GROUP=<n>: poll multireddits of n subs (r/a+b+c/comments/?limit=100) instead of single subs: one page = the newest 100 comments of all of them
      WARMUP=40: seconds ignored in the STEADY numbers (the first pass returns the old backlog)
      SUBS_EXTRA=a,b,c: more subreddit names
+     TARGETS=all,popular: poll exactly these names instead (r/all and r/popular = the site-wide latest comments)
 """
 from __future__ import annotations
 
@@ -75,6 +76,8 @@ async def main() -> None:
     variants = [v for v in os.environ.get("VARIANTS", "limit100" if group > 1 else "plain,limit100").split(",") if v in VARIANT_URLS]
     all_subs = list(dict.fromkeys(SUBS + [x for x in os.environ.get("SUBS_EXTRA", "").split(",") if x]))
     targets = ["+".join(all_subs[i:i + group]) for i in range(0, len(all_subs), group)]
+    if os.environ.get("TARGETS"):
+        targets = [x for x in os.environ["TARGETS"].split(",") if x]
     observed: Counter[str] = Counter()
     direct = os.environ.get("DIRECT") == "1"
     rps = float(os.environ.get("RPS", "2"))
@@ -156,6 +159,12 @@ async def main() -> None:
                     continue
                 c["ok"] += 1
                 c[f"ok_{variant}"] += 1
+                ages_here = [a for a in (age_seconds(t["created"]) for t in things if t["created"]) if a is not None]
+                if ages_here:
+                    c["page_newest_age_sum"] += min(ages_here)
+                    c["page_span_sum"] += max(ages_here) - min(ages_here)
+                    c["pages_aged"] += 1
+                    c["page_repeat_sum"] += sum(1 for t in things if t["id"] in seen) / len(things)
                 c[f"comments_{variant}"] += len(things)
                 if c["debug_sample"] < 1:
                     c["debug_sample"] += 1
@@ -250,6 +259,10 @@ async def main() -> None:
     print(f"STEADY (after {warmup:.0f}s warm-up, {steady_span:.0f}s): unique text comments {c['steady_unique']} = {c['steady_unique'] / steady_span:.1f}/s"
           + (f" | NEW to Exorde {c['steady_new']} = {c['steady_new'] / steady_span:.1f}/s" if check_endpoint != "off" else "")
           + f" | saturated pages (missed comments between polls): {c['saturated_pages']}")
+    if c["pages_aged"]:
+        n = c["pages_aged"]
+        print(f"per page: newest comment {c['page_newest_age_sum'] / n:.0f}s old on average, the page spans {c['page_span_sum'] / n:.0f}s, "
+              f"{100 * c['page_repeat_sum'] / n:.0f}% already seen (a stale/cached listing shows a high share)")
     print(f"targets polled: {len(targets)} ({'multireddits of ' + str(group) if group > 1 else 'single subs'}); busiest subs seen: "
           + ", ".join(f"{k}:{v}" for k, v in observed.most_common(15)))
     print(f"traffic (decoded): {c['bytes'] / 1e6:.0f} MB = {c['bytes'] / 1e6 / span:.1f} MB/s | page avg {c['bytes'] / max(1, sum(c[f'req_{v}'] for v in variants)) / 1024:.0f} KB")
