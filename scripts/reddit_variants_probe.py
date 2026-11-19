@@ -37,6 +37,14 @@ VARIANTS = {  # name: (url template, content kind)
 }
 
 
+def census(text: str) -> str:
+    """What is inside a 200 page that had no comments: title, marker counts and the most common custom tags."""
+    title = re.search(r"<title>(.*?)</title>", text, re.S)
+    tags = Counter(re.findall(r"<([a-z]+-[a-z0-9-]+)", text)).most_common(6)
+    marks = {m: text.count(m) for m in ("t1_", "t3_", "shreddit-post", "shreddit-comment", "Verify", "captcha", "login")}
+    return f"title={title.group(1)[:60]!r} marks={ {k: v for k, v in marks.items() if v} } tags={tags}"
+
+
 def count_items(text: str, kind: str) -> int:
     if kind == "html":
         return len(RE_THING.findall(text)) + text.count("<shreddit-comment ")
@@ -75,7 +83,7 @@ async def main() -> None:
                 sizes[key].append(len(r.content))
                 items[key].append(n)
                 if key not in notes and not (r.status_code == 200 and n > 0):
-                    notes[key] = f"{r.status_code}: {re.sub(r'\s+', ' ', text[:140])!r}"
+                    notes[key] = f"{r.status_code}: {re.sub(r'\s+', ' ', text[:140])!r}" + (f"\n      census: {census(text)}" if r.status_code == 200 else "")
             except Exception as exc:  # noqa: BLE001
                 results[key]["timeout" if "timed out" in str(exc).lower() or "(28)" in str(exc) else "conn_error"] += 1
 
@@ -101,7 +109,7 @@ async def main() -> None:
             print(f"{name:<36} {route:<7} {ok:>3}/{total:<3}  {codes:<26} {sum(sz) / len(sz) / 1024 if sz else 0:6.0f}  {sum(good) / len(good) if good else 0:6.1f}")
     print("\nwhat the non-working ones return (first example):")
     for (name, route), text in notes.items():
-        if results[(name, route)]["ok"] == 0:
+        if results[(name, route)]["ok"] == 0 and (text.startswith("200") or route == "direct"):
             print(f"  {name} [{route}] {text}")
 
 
