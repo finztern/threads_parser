@@ -31,6 +31,12 @@ Showerthoughts technology science aww music sports nba soccer nfl television Fut
 stocks investing personalfinance relationship_advice AmItheAsshole tifu unpopularopinion explainlikeimfive LifeProTips NoStupidQuestions
 OutOfTheLoop pcmasterrace Fauxmoi Conservative PublicFreakout facepalm mildlyinfuriating AskMen AskWomen CasualConversation teenagers
 food buildapc Android""".split()
+try:  # a home line with IPv4 only: do not let the client try (and wait for) IPv6 first
+    from curl_cffi import CurlOpt
+
+    IPV4: dict = {"curl_options": {CurlOpt.IPRESOLVE: 1}} if os.environ.get("FORCE_IPV4", "1") == "1" else {}
+except ImportError:
+    IPV4 = {}
 HEADERS = {"Accept-Language": "en-US,en;q=0.9"}
 VARIANT_URLS = {"plain": "https://www.reddit.com/r/{sub}/comments/", "limit100": "https://www.reddit.com/r/{sub}/comments/?limit=100"}
 THING_RE = re.compile(r'<div[^>]*\bdata-fullname="(t1_[a-z0-9]+)"[^>]*>', re.I)
@@ -116,7 +122,7 @@ async def main() -> None:
 
     async def worker() -> None:
         port = pick_port()
-        session = AsyncSession(impersonate="chrome", timeout=20, proxies=proxies(port))
+        session = AsyncSession(impersonate="chrome", timeout=20, proxies=proxies(port), **(IPV4 if direct else {}))
         try:
             while time.monotonic() < deadline:
                 await pace()
@@ -131,7 +137,7 @@ async def main() -> None:
                     banned[port] = time.monotonic() + 60
                     await session.close()
                     port = pick_port()
-                    session = AsyncSession(impersonate="chrome", timeout=20, proxies=proxies(port))
+                    session = AsyncSession(impersonate="chrome", timeout=20, proxies=proxies(port), **(IPV4 if direct else {}))
                     continue
                 lat[variant].append(time.monotonic() - t0)
                 c[f"req_{variant}"] += 1
@@ -143,7 +149,7 @@ async def main() -> None:
                         print(f"DEBUG http {r.status_code} sub={sub} variant={variant}: {r.text[:200]!r}", flush=True)
                     await session.close()
                     port = pick_port()
-                    session = AsyncSession(impersonate="chrome", timeout=20, proxies=proxies(port))
+                    session = AsyncSession(impersonate="chrome", timeout=20, proxies=proxies(port), **(IPV4 if direct else {}))
                     continue
                 body = r.text
                 things = parse_things(body)
@@ -202,7 +208,7 @@ async def main() -> None:
     async def url_checker() -> None:
         if check_endpoint == "off":
             return
-        async with AsyncSession(impersonate="chrome", timeout=15) as s:
+        async with AsyncSession(impersonate="chrome", timeout=15, **(IPV4 if direct else {})) as s:
             while time.monotonic() < deadline + 5:
                 await asyncio.sleep(1.0)
                 while url_queue:

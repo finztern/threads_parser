@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from curl_cffi.requests import AsyncSession
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
-from reddit_html_test import THING_RE, age_seconds, parse_things  # noqa: E402,F401
+from reddit_html_test import IPV4, THING_RE, age_seconds, parse_things  # noqa: E402,F401
 
 URLS = [
     "https://www.reddit.com/r/all/comments/",
@@ -35,7 +35,7 @@ async def main() -> None:
         ok = items = new_total = 0
         newest, spans, rates = [], [], []
         notes: list[str] = []
-        async with AsyncSession(impersonate="chrome", timeout=20) as session:
+        async with AsyncSession(impersonate="chrome", timeout=20, **IPV4) as session:
             for i in range(polls):
                 try:
                     r = await session.get(url, headers={"Accept-Language": "en-US,en;q=0.9"})
