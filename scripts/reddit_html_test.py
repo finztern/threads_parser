@@ -6,6 +6,9 @@ datetime, text. Fresh unique comments are checked against the Exorde url-check A
 Usage: python3 scripts/reddit_html_test.py PORT_FIRST PORT_COUNT [seconds=180] [workers=40]
 Direct mode (no nodes, e.g. on the home PC): DIRECT=1 RPS=2 python3 scripts/reddit_html_test.py 0 1 180 8
 Env: URL_CHECK=<endpoint or "off">  VARIANTS="plain,limit100" (which URL forms are mixed)  DIRECT=1  RPS=<global requests/s limit, direct mode>
+     GROUP=<n>: poll multireddits of n subs (r/a+b+c/comments/?limit=100) instead of single subs: one page = the newest 100 comments of all of them
+     WARMUP=40: seconds ignored in the STEADY numbers (the first pass returns the old backlog)
+     SUBS_EXTRA=a,b,c: more subreddit names
 """
 from __future__ import annotations
 
@@ -67,7 +70,12 @@ async def main() -> None:
     seconds = float(sys.argv[3]) if len(sys.argv) > 3 else 180
     workers = int(sys.argv[4]) if len(sys.argv) > 4 else 40
     check_endpoint = os.environ.get("URL_CHECK", "https://url-check.exorde.network/v1/check")
-    variants = [v for v in os.environ.get("VARIANTS", "plain,limit100").split(",") if v in VARIANT_URLS]
+    group = int(os.environ.get("GROUP", "1"))
+    warmup = float(os.environ.get("WARMUP", "40"))
+    variants = [v for v in os.environ.get("VARIANTS", "limit100" if group > 1 else "plain,limit100").split(",") if v in VARIANT_URLS]
+    all_subs = list(dict.fromkeys(SUBS + [x for x in os.environ.get("SUBS_EXTRA", "").split(",") if x]))
+    targets = ["+".join(all_subs[i:i + group]) for i in range(0, len(all_subs), group)]
+    observed: Counter[str] = Counter()
     direct = os.environ.get("DIRECT") == "1"
     rps = float(os.environ.get("RPS", "2"))
     slot = [0.0]  # global pacing in direct mode: one IP must not hammer Reddit
@@ -75,9 +83,9 @@ async def main() -> None:
     banned: dict[int, float] = {}
     c: Counter[str] = Counter()
     seen: set[str] = set()
-    last_poll = {s: 0.0 for s in SUBS}
+    last_poll = {s: 0.0 for s in targets}
     samples: list[str] = []
-    url_queue: list[str] = []
+    url_queue: list[tuple[str, bool]] = []
     lat: dict[str, list[float]] = {v: [] for v in variants}
     deadline = time.monotonic() + seconds
     t_start = time.monotonic()
@@ -99,7 +107,7 @@ async def main() -> None:
         return {"http": f"socks5h://127.0.0.1:{port}", "https": f"socks5h://127.0.0.1:{port}"}
 
     def next_sub() -> str:
-        sub = min(SUBS, key=lambda s: last_poll[s])
+        sub = min(targets, key=lambda s: last_poll[s])
         last_poll[sub] = time.monotonic()
         return sub
 
@@ -153,7 +161,11 @@ async def main() -> None:
                     c["debug_sample"] += 1
                     m = THING_RE.search(body)
                     print(f"DEBUG first comment tag: {m.group(0)[:500]!r}\n  parsed: {things[0]}", flush=True)
+                if len(things) >= 100 and all(t["id"] not in seen for t in things):
+                    c["saturated_pages"] += 1  # a whole page of unseen comments: more were posted between two polls than one page holds
                 for t in things:
+                    if t["subreddit"]:
+                        observed[t["subreddit"]] += 1
                     if not t["created"]:
                         c["no_datetime"] += 1
                         continue
@@ -165,11 +177,14 @@ async def main() -> None:
                         c["too_short"] += 1
                         continue
                     c["unique_text"] += 1
+                    steady = time.monotonic() - t_start > warmup
+                    if steady:
+                        c["steady_unique"] += 1
                     age = age_seconds(t["created"])
                     if age is not None:
                         c["age_<1min" if age < 60 else "age_<5min" if age < 300 else "age_<1h" if age < 3600 else "age_<1d" if age < 86400 else "age_older"] += 1
                     if t["permalink"]:
-                        url_queue.append("https://www.reddit.com" + t["permalink"])
+                        url_queue.append(("https://www.reddit.com" + t["permalink"], steady))
                     if len(samples) < 4:
                         samples.append(f"[{t['created']}] r/{t['subreddit']} u/{t['author']}: {t['text'][:90]}")
         finally:
@@ -182,7 +197,9 @@ async def main() -> None:
             while time.monotonic() < deadline + 5:
                 await asyncio.sleep(1.0)
                 while url_queue:
-                    batch, url_queue[:300] = url_queue[:300], []
+                    items, url_queue[:300] = url_queue[:300], []
+                    batch = [u for u, _ in items]
+                    steady_of = dict(items)
                     try:
                         r = await s.post(check_endpoint, json={"urls": batch})
                         data = r.json() if r.status_code == 200 else None
@@ -192,6 +209,7 @@ async def main() -> None:
                         known = {u for u in data if isinstance(u, str)}
                         c["url_known"] += len(known)
                         c["url_new"] += len(batch) - len(known)
+                        c["steady_new"] += sum(1 for u in batch if u not in known and steady_of[u])
                     else:
                         c["url_unverified"] += len(batch)
 
@@ -214,7 +232,7 @@ async def main() -> None:
         return f"{sum(v) / len(v):.1f}s" if v else "-"
 
     print("\n================ REDDIT HTML RESULT ================")
-    print(f"{'DIRECT (own IP), rate limit ' + str(rps) + '/s' if direct else 'nodes: ' + str(count)} | workers: {workers} | duration: {span:.0f}s | subreddits: {len(SUBS)}")
+    print(f"{'DIRECT (own IP), rate limit ' + str(rps) + '/s' if direct else 'nodes: ' + str(count)} | workers: {workers} | duration: {span:.0f}s | subreddits: {len(all_subs)}")
     for v in variants:
         reqs = c[f"req_{v}"]
         print(f"variant {v:>8}: requests {reqs}, pages with comments {c[f'ok_{v}']} ({100 * c[f'ok_{v}'] / max(1, reqs):.0f}%),"
@@ -228,6 +246,12 @@ async def main() -> None:
         total = c["url_known"] + c["url_new"]
         print(f"url check: known to Exorde {c['url_known']}, NEW to Exorde {c['url_new']} = {c['url_new'] / span:.1f}/s"
               f" ({100 * c['url_new'] / max(1, total):.0f}% of checked) | unverified {c['url_unverified']}")
+    steady_span = max(1.0, span - warmup)
+    print(f"STEADY (after {warmup:.0f}s warm-up, {steady_span:.0f}s): unique text comments {c['steady_unique']} = {c['steady_unique'] / steady_span:.1f}/s"
+          + (f" | NEW to Exorde {c['steady_new']} = {c['steady_new'] / steady_span:.1f}/s" if check_endpoint != "off" else "")
+          + f" | saturated pages (missed comments between polls): {c['saturated_pages']}")
+    print(f"targets polled: {len(targets)} ({'multireddits of ' + str(group) if group > 1 else 'single subs'}); busiest subs seen: "
+          + ", ".join(f"{k}:{v}" for k, v in observed.most_common(15)))
     print(f"traffic (decoded): {c['bytes'] / 1e6:.0f} MB = {c['bytes'] / 1e6 / span:.1f} MB/s | page avg {c['bytes'] / max(1, sum(c[f'req_{v}'] for v in variants)) / 1024:.0f} KB")
     print(f"timeouts {c['timeout']}, errors {c['err']}")
     fails = {k[5:]: v for k, v in c.items() if k.startswith("fail_")}
