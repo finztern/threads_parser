@@ -47,13 +47,13 @@ def blocks(html: str) -> list[str]:
 
 
 def fetch(s: Session, url: str) -> tuple[int, str]:
-    r = s.get(url, impersonate="chrome", timeout=20, headers={"Accept-Language": "en-US,en;q=0.9"}, **IPV4)
+    r = s.get(url, impersonate="chrome", timeout=20, headers={"Accept-Language": "en-US,en;q=0.9"})
     return r.status_code, r.text
 
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
-    s = Session()
+    s = Session(**IPV4)
     attr_names: Counter = Counter()
     hints: Counter = Counter()
     n = scores = deleted = bots = 0
