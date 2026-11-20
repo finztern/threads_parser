@@ -91,7 +91,7 @@ async def http_runner(
             # Optional static proxies next to Tor (proxies.txt, a secret): a share of the requests goes through them.
             static_share = float(cfg.get("static_proxy_share", 0.0))
             proxies_path = _resolve(cfg.get("proxies_file", "proxies.txt"))
-            if static_share > 0 and (cfg.get("proxy_sources") or cfg.get("vpn_sources")):
+            if static_share > 0 and (cfg.get("proxy_sources") or cfg.get("vpn_sources") or os.getenv("VPN_SOURCES_EXTRA", "").strip()):
                 # Free public lists: the harvester fills the static list in the background (see proxy_harvest.py).
                 pool = MixedPool(pool, None, static_share, cooldown=float(cfg.get("proxy_cooldown_seconds", 120)))
                 LOGGER.info("http mode: Tor + harvested free proxies, %.0f%% of requests once the first harvest is done", 100 * static_share)
@@ -728,7 +728,7 @@ async def _vpn_loop(pool: MixedPool, config_store: ConfigStore, stop_event: asyn
     try:
         while not stop_event.is_set():
             cfg = config_store.get()
-            if cfg.get("vpn_sources"):
+            if cfg.get("vpn_sources") or os.getenv("VPN_SOURCES_EXTRA", "").strip():
                 base = int(cfg.get("vpn_base_port", 12000)) + (flip % 2) * 1000
                 try:
                     proxies, proc = await harvest_nodes(cfg, base)

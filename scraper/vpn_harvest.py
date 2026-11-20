@@ -12,6 +12,7 @@ import base64
 import json
 import os
 import random
+import re
 import shutil
 import statistics
 import tempfile
@@ -90,27 +91,41 @@ async def _probe(port: int, timeout: float, max_latency: float, sem: asyncio.Sem
 XRAY_LOG = os.path.join(tempfile.gettempdir(), "xray_vpn.log")
 
 
+def extra_sources() -> list[str]:
+    """Paid/own subscriptions from the env VPN_SOURCES_EXTRA (a secret: the URL carries a token, so it never
+    goes to config.yaml). Whitespace or comma separated. Their nodes are always candidates and always kept."""
+    return [u for u in re.split(r"[\s,]+", os.getenv("VPN_SOURCES_EXTRA", "")) if u.startswith("http")]
+
+
 async def harvest_nodes(cfg: dict, base_port: int) -> tuple[list[str], asyncio.subprocess.Process | None]:
     """(working local proxies, the Xray process that serves them). Empty list when nothing worked."""
     sources = [s for s in (cfg.get("vpn_sources") or []) if isinstance(s, str) and s.strip()]
+    extra = extra_sources()
     xray = os.getenv("XRAY_BIN") or shutil.which("xray")
-    if not sources or not xray:
+    if not (sources or extra) or not xray:
         return [], None
-    links = await _download(sources)
-    random.shuffle(links)
+    free_links = await _download(sources) if sources else []
+    extra_links = await _download(extra) if extra else []
+    paid_set = set(extra_links)
+    random.shuffle(free_links)
+    links = extra_links + [l for l in free_links if l not in paid_set]
     candidates = []
-    for link in links[: int(cfg.get("vpn_candidates", 800))]:
+    paid_flags: list[bool] = []
+    for link in extra_links + [l for l in free_links if l not in paid_set][: int(cfg.get("vpn_candidates", 800))]:
         try:
             candidates.append(parse_vless(link))
         except ValueError:
             continue
+        paid_flags.append(link in paid_set)
     want = int(cfg.get("vpn_nodes", 250))
     with tempfile.TemporaryDirectory() as tmp:
         sem = asyncio.Semaphore(8)
         checked = await asyncio.gather(
             *(_xray_accepts(xray, n, Path(tmp), base_port, sem, i) for i, n in enumerate(candidates))
         )
-        nodes = [n for n, ok in zip(candidates, checked) if ok][:want]
+        accepted = [(n, paid) for n, ok, paid in zip(candidates, checked, paid_flags) if ok]
+        paid_nodes = [n for n, paid in accepted if paid]
+        nodes = paid_nodes + [n for n, paid in accepted if not paid][: max(0, want - len(paid_nodes))]
         if not nodes:
             LOGGER.warning("vpn harvest: %d links, no node accepted by xray", len(links))
             return [], None
@@ -127,15 +142,18 @@ async def harvest_nodes(cfg: dict, base_port: int) -> tuple[list[str], asyncio.s
     verify_sem = asyncio.Semaphore(int(cfg.get("vpn_probe_concurrency", 30)))
     max_latency = float(cfg.get("vpn_max_latency_seconds", 6.0))
     latencies = await asyncio.gather(*(_probe(base_port + i, max_latency * 2.5, max_latency, verify_sem) for i in range(len(nodes))))
-    good = sorted(((lat, base_port + i) for i, lat in enumerate(latencies) if lat is not None))
-    good = good[: int(cfg.get("vpn_keep", 150))]
+    # nodes[:len(paid_nodes)] are the paid ones: every paid node that opens Threads is kept, free ones fill up to vpn_keep.
+    ok_all = [(lat, base_port + i, i < len(paid_nodes)) for i, lat in enumerate(latencies) if lat is not None]
+    paid_good = sorted((lat, port) for lat, port, paid in ok_all if paid)
+    free_good = sorted((lat, port) for lat, port, paid in ok_all if not paid)
+    good = sorted(paid_good + free_good[: max(0, int(cfg.get("vpn_keep", 150)) - len(paid_good))])
     if not good:
         LOGGER.warning("vpn harvest: %d nodes started, none opened a Threads page", len(nodes))
         _stop(proc)
         return [], None
     LOGGER.info(
-        "vpn harvest: %d links, %d accepted by xray, %d open Threads (<=%.0fs) kept, median %.1fs",
-        len(links), len(nodes), len(good), max_latency, statistics.median(l for l, _ in good),
+        "vpn harvest: %d links (%d paid), %d accepted by xray, %d open Threads (<=%.0fs) kept (%d paid), median %.1fs",
+        len(links), len(extra_links), len(nodes), len(good), max_latency, len(paid_good), statistics.median(l for l, _ in good),
     )
     return [f"{LOCAL_PREFIX}{port}" for _, port in good], proc
 
