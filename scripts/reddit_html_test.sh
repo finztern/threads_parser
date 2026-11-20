@@ -97,6 +97,17 @@ if [ "${SCAN:-0}" = "1" ]; then
 fi
 
 # ---- 2. the test ----
+# GOOD_ONLY=1: scan first (quick), then run the test only on the nodes Reddit lets through, one worker per node, cookies kept.
+# Pace per node: NODE_INTERVAL seconds (default 5).
+if [ "${GOOD_ONLY:-0}" = "1" ]; then
+  ROUNDS="${SCAN_ROUNDS:-2}" GAP=4 GOOD_FILE="$WORK/good_ports.txt" python3 /app/scripts/reddit_node_scan.py "$BASE_PORT" "$good" | tail -4
+  export PORTS="$(cat "$WORK/good_ports.txt")"
+  [ -n "$PORTS" ] || { echo "no node passed the scan"; exit 1; }
+  CONC=$(echo "$PORTS" | tr ',' '\n' | wc -l)
+  export KEEP_SESSION=1 NODE_INTERVAL="${NODE_INTERVAL:-5}"
+  echo "testing on $CONC good nodes, one request per node every ~${NODE_INTERVAL}s"
+fi
+
 echo
 echo "running ${SECONDS_RUN}s: $CONC parallel videos through $good nodes ..."
 # real (wire) traffic of this container: counters of the non-loopback interfaces before and after

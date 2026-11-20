@@ -90,6 +90,10 @@ async def main() -> None:
     rps = float(os.environ.get("RPS", "2"))
     slot = [0.0]  # global pacing in direct mode: one IP must not hammer Reddit
     ports = [0] if direct else list(range(first, first + count))
+    if os.environ.get("PORTS") and not direct:  # explicit list of node ports (e.g. only the nodes the scan found good)
+        ports = [int(x) for x in os.environ["PORTS"].split(",") if x]
+    keep_session = os.environ.get("KEEP_SESSION") == "1"  # one node per worker, cookies kept, 403 does not reset the session
+    node_interval = float(os.environ.get("NODE_INTERVAL", "0"))  # seconds between two requests of ONE worker/node
     banned: dict[int, float] = {}
     c: Counter[str] = Counter()
     seen: set[str] = set()
@@ -121,12 +125,15 @@ async def main() -> None:
         last_poll[sub] = time.monotonic()
         return sub
 
-    async def worker() -> None:
-        port = pick_port()
+    async def worker(idx: int = 0) -> None:
+        port = ports[idx % len(ports)] if keep_session else pick_port()
+        bad_streak = 0
         session = AsyncSession(impersonate="chrome", timeout=20, proxies=proxies(port), **(IPV4 if direct else {}))
         try:
             while time.monotonic() < deadline:
                 await pace()
+                if node_interval:
+                    await asyncio.sleep(node_interval * random.uniform(0.8, 1.2))
                 sub, variant = next_sub(), random.choice(variants)
                 t0 = time.monotonic()
                 try:
@@ -148,6 +155,12 @@ async def main() -> None:
                     banned[port] = time.monotonic() + (120 if r.status_code in (403, 429) else 30)
                     if c[f"http_{r.status_code}"] <= 2:
                         print(f"DEBUG http {r.status_code} sub={sub} variant={variant}: {r.text[:200]!r}", flush=True)
+                    if keep_session:
+                        # keep the cookies of this session: the first answer is often a 403 that sets them, the next ones pass
+                        bad_streak += 1
+                        banned[port] = 0.0
+                        await asyncio.sleep(30 if r.status_code == 429 else 2 + 4 * min(bad_streak, 5))
+                        continue
                     await session.close()
                     port = pick_port()
                     session = AsyncSession(impersonate="chrome", timeout=20, proxies=proxies(port), **(IPV4 if direct else {}))
@@ -164,6 +177,7 @@ async def main() -> None:
                         print(f"DEBUG no comments sub={sub} variant={variant} len={len(body)} title={title.group(1)[:80] if title else None!r}"
                               f" t1_ occurrences={body.count('t1_')}\n  head: {body[:200]!r}", flush=True)
                     continue
+                bad_streak = 0
                 c["ok"] += 1
                 c[f"ok_{variant}"] += 1
                 ages_here = [a for a in (age_seconds(t["created"]) for t in things if t["created"]) if a is not None]
@@ -244,7 +258,7 @@ async def main() -> None:
                   f" | 403/429 {c['http_403'] + c['http_429'] - last['http_403'] - last['http_429']} | fail {c['err'] + c['timeout'] - last['err'] - last['timeout']}", flush=True)
             last, t_last = Counter(c), now
 
-    await asyncio.gather(monitor(), url_checker(), *(worker() for _ in range(workers)))
+    await asyncio.gather(monitor(), url_checker(), *(worker(i) for i in range(workers)))
     span = time.monotonic() - t_start
 
     def avg(v: list[float]) -> str:

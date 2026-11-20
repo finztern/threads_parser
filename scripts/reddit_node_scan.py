@@ -54,6 +54,10 @@ async def main() -> None:
             good[p] += r["ok"][p] > 0
         anygood += sum(r["ok"].values()) > 0
     print(f"\nnodes with at least one OK page: {anygood}/{count}; per profile: {good}")
+    gf = os.environ.get("GOOD_FILE")
+    if gf:
+        with open(gf, "w") as fh:
+            fh.write(",".join(str(r["port"]) for r in out if sum(r["ok"].values()) > 0))
     full = sum(1 for r in out if all(r["ok"][p] == r["n"][p] for p in PROFILES))
     print(f"nodes OK in every single request: {full}/{count}")
 
