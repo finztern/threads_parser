@@ -84,6 +84,12 @@ sleep 3
 kill -0 "$XRAY_PID" 2>/dev/null || { echo "xray exited:"; head -5 "$WORK/xray.log"; exit 1; }
 echo "$good nodes started (SOCKS ports $BASE_PORT..$((BASE_PORT + good - 1)))"
 
+# PROBE=1: do not run the throughput test, only explain the 403s (exit IP, TLS profiles, answer snippets) on the first nodes
+if [ "${PROBE:-0}" = "1" ]; then
+  python3 /app/scripts/reddit_403_probe.py "$BASE_PORT" "$good" "${PROBE_NODES:-4}"
+  exit 0
+fi
+
 # ---- 2. the test ----
 echo
 echo "running ${SECONDS_RUN}s: $CONC parallel videos through $good nodes ..."
