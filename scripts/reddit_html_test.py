@@ -9,6 +9,7 @@ Env: URL_CHECK=<endpoint or "off">  VARIANTS="plain,limit100" (which URL forms a
      GROUP=<n>: poll multireddits of n subs (r/a+b+c/comments/?limit=100) instead of single subs: one page = the newest 100 comments of all of them
      WARMUP=40: seconds ignored in the STEADY numbers (the first pass returns the old backlog)
      SUBS_EXTRA=a,b,c: more subreddit names
+     URL_CHECK_PROXY=socks5h://127.0.0.1:10809: send the Exorde url-check through this proxy (the home urlcheck-socks service)
      TARGETS=all,popular: poll exactly these names instead (r/all and r/popular = the site-wide latest comments)
 """
 from __future__ import annotations
@@ -205,10 +206,13 @@ async def main() -> None:
         finally:
             await session.close()
 
+    check_proxy = os.environ.get("URL_CHECK_PROXY", "")
+    check_proxies = {"http": check_proxy, "https": check_proxy} if check_proxy else None
+
     async def url_checker() -> None:
         if check_endpoint == "off":
             return
-        async with AsyncSession(impersonate="chrome", timeout=15, **(IPV4 if direct else {})) as s:
+        async with AsyncSession(impersonate="chrome", timeout=15, proxies=check_proxies, **(IPV4 if direct and not check_proxy else {})) as s:
             while time.monotonic() < deadline + 5:
                 await asyncio.sleep(1.0)
                 while url_queue:

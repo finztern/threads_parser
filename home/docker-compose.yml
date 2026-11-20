@@ -19,3 +19,24 @@ services:
         max-size: "10m"
         max-file: "2"
     restart: unless-stopped
+
+  # Optional: one more vless link as a plain local SOCKS5 proxy (127.0.0.1:10809), e.g. for the Exorde url-check of the Reddit test.
+  # The link lives in home/vless_urlcheck.txt (not in git). Start it with:  docker compose up -d --build urlcheck-socks
+  urlcheck-socks:
+    build:
+      context: ..
+      dockerfile: home/Dockerfile
+    command: ["python3", "socks_only.py"]
+    network_mode: host
+    environment:
+      SOCKS_PORT: "10809"
+      SOCKS_VLESS_FILE: /data/vless.txt
+    volumes:
+      - ./vless_urlcheck.txt:/data/vless.txt:ro
+    cpus: 0.3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+    restart: unless-stopped
