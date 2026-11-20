@@ -11,7 +11,7 @@ What it does:
   * fresh comments are checked against the Exorde url-check API from this host (no proxy), URL format
     https://www.youtube.com/watch?v=<video>&lc=<comment id> (the permalink). "new to Exorde" = not reported as known.
 Usage: python3 scripts/yt_hot_test.py PORT_FIRST PORT_COUNT [seconds=240] [workers=80]
-Env: HOT_INTERVAL=30  HOT_MIN=1.0  EXPLORE_SHARE=0.7  URL_CHECK=<endpoint or "off">  MAX_PAGES=3
+Env: URL_CHECK_PROXY=<socks5h://...>  HOT_INTERVAL=30  HOT_MIN=1.0  EXPLORE_SHARE=0.7  URL_CHECK=<endpoint or "off">  MAX_PAGES=3
 """
 from __future__ import annotations
 
@@ -302,7 +302,9 @@ async def main() -> None:
     async def url_checker() -> None:
         if check_endpoint == "off":
             return
-        async with AsyncSession(impersonate="chrome", timeout=15) as s:  # direct, like the parser's url-check
+        uc_proxy = os.environ.get("URL_CHECK_PROXY", "")  # e.g. socks5h://127.0.0.1:10809 on the home PC (direct is blocked there)
+        uc_proxies = {"http": uc_proxy, "https": uc_proxy} if uc_proxy else None
+        async with AsyncSession(impersonate="chrome", timeout=15, proxies=uc_proxies) as s:
             while time.monotonic() < deadline + 5:
                 await asyncio.sleep(1.0)
                 while url_queue:
