@@ -90,6 +90,12 @@ if [ "${PROBE:-0}" = "1" ]; then
   exit 0
 fi
 
+# SCAN=1: which nodes does Reddit let through (all started nodes, a few paced rounds)
+if [ "${SCAN:-0}" = "1" ]; then
+  python3 /app/scripts/reddit_node_scan.py "$BASE_PORT" "$good"
+  exit 0
+fi
+
 # ---- 2. the test ----
 echo
 echo "running ${SECONDS_RUN}s: $CONC parallel videos through $good nodes ..."
