@@ -13,6 +13,7 @@ The file itself is a secret: keep it out of git (see .gitignore).
 """
 from __future__ import annotations
 
+import os
 import random
 import time
 from pathlib import Path
@@ -42,15 +43,33 @@ def mask_proxy(proxy: str) -> str:
     return proxy.rsplit("@", 1)[-1].split("://", 1)[-1]
 
 
+def _curl_buffersize() -> int:
+    """CURL_BUFFERSIZE (bytes, default 262144; 0 = libcurl default 16 KB). A page is ~1 MB: with 16 KB chunks curl calls the
+    Python write callback ~60 times per page (profile: 485k callbacks, ~8 s of 65 s of the main thread in 90 s); 256 KB
+    chunks cut that by an order of magnitude and the number of recv() calls with it."""
+    try:
+        return max(0, int(os.getenv("CURL_BUFFERSIZE", "262144")))
+    except ValueError:
+        return 262144
+
+
 def transport_options(proxy: str) -> tuple[dict, dict]:
     """(AsyncSession kwargs, request kwargs) for a pool entry: a proxy URL, or "ipv6://<address>"
     = no proxy, bind to that source address and resolve IPv6 only.
     """
+    curl_options: dict = {}
+    size = _curl_buffersize()
+    if size:
+        from curl_cffi.const import CurlOpt
+
+        curl_options[CurlOpt.BUFFERSIZE] = size
     if proxy.startswith("ipv6://"):
         from curl_cffi.const import CurlOpt
 
-        return {"interface": proxy[7:], "curl_options": {CurlOpt.IPRESOLVE: 2}}, {}
-    return {}, {"proxies": {"http": proxy, "https": proxy}}
+        curl_options[CurlOpt.IPRESOLVE] = 2
+        return {"interface": proxy[7:], "curl_options": curl_options}, {}
+    session_opts = {"curl_options": curl_options} if curl_options else {}
+    return session_opts, {"proxies": {"http": proxy, "https": proxy}}
 
 
 class ProxyPool:

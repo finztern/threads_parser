@@ -4,6 +4,7 @@ the HTTP runner (rotating proxy pool, no accounts, no browser).
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 
 from dotenv import load_dotenv
@@ -70,4 +71,12 @@ async def run() -> None:
 
 
 if __name__ == "__main__":
+    if os.getenv("USE_UVLOOP") == "1":
+        try:  # optional: a faster event loop (profile: ~15% of the main thread is asyncio's own timers/heap/_run_once)
+            import uvloop
+
+            asyncio.run(run(), loop_factory=uvloop.new_event_loop)
+            raise SystemExit(0)
+        except ImportError:
+            LOGGER.warning("USE_UVLOOP=1 but uvloop is not installed; using the default event loop")
     asyncio.run(run())
