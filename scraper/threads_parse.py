@@ -118,6 +118,19 @@ def parse_bytes(fn: Any, content: bytes, arg: str) -> list[RawThreadsPost]:
     return fn(content.decode("utf-8", "replace"), arg)
 
 
+def parse_shm(fn: Any, shm_name: str, size: int, arg: str) -> list[RawThreadsPost]:
+    """Same as parse_bytes, but the page body is read from a shared-memory block instead of
+    being pickled through the executor pipe (pickling ~1 MB costs the main thread ~1 ms)."""
+    from multiprocessing import shared_memory
+
+    shm = shared_memory.SharedMemory(name=shm_name)
+    try:
+        html = str(shm.buf[:size], "utf-8", "replace")
+    finally:
+        shm.close()
+    return fn(html, arg)
+
+
 def _sjs_blocks(html: str, marker: str):
     """Yield data-sjs script bodies that contain `marker`.
 

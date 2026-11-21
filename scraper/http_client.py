@@ -26,6 +26,7 @@ from scraper.threads_parse import (
     _extract_ssr_reply_posts,
     _extract_ssr_user_replies,
     parse_bytes,
+    parse_shm,
 )
 from scraper.constants import LOGGER
 from scraper.pipeline import RawThreadsPost
@@ -96,6 +97,8 @@ class ThreadsHttpClient:
         self.error_kinds: Counter[str] = Counter()  # normalized transport error messages, per cycle
         self.status_kinds: Counter[str] = Counter()  # HTTP status / block reason of non-ok pages, per cycle
         self._executor: ProcessPoolExecutor | None = None
+        # PARSE_SHM=0 turns the shared-memory page transfer off (pages are pickled instead).
+        self._use_shm = os.environ.get("PARSE_SHM", "1").strip().lower() not in ("0", "false", "no", "off")
         if parse_workers is not None:
             workers = parse_workers if parse_workers > 0 else max(1, min(os.cpu_count() or 2, 4))
             # "spawn": forking a process that already runs network threads is unsafe.
@@ -118,13 +121,40 @@ class ThreadsHttpClient:
     async def _parse(self, fn: Callable[[str, str], list[RawThreadsPost]], body: bytes, arg: str) -> list[RawThreadsPost]:
         if self._executor is None:
             return parse_bytes(fn, body, arg)
+        loop = asyncio.get_running_loop()
+        shm = None
+        if self._use_shm and body:
+            try:
+                from multiprocessing import shared_memory
+
+                shm = shared_memory.SharedMemory(create=True, size=len(body))
+                shm.buf[: len(body)] = body
+            except Exception:
+                # /dev/shm full or unavailable: fall back to pickling this page.
+                self.stats["shm_fallback"] += 1
+                if shm is not None:
+                    self._free_shm(shm)
+                shm = None
         try:
-            return await asyncio.get_running_loop().run_in_executor(self._executor, parse_bytes, fn, body, arg)
+            if shm is not None:
+                return await loop.run_in_executor(self._executor, parse_shm, fn, shm.name, len(body), arg)
+            return await loop.run_in_executor(self._executor, parse_bytes, fn, body, arg)
         except Exception:
             # Broken worker pool etc.: never lose the page, parse inline.
             LOGGER.exception("parser process failed, parsing inline")
             self.stats["parse_fallback"] += 1
             return parse_bytes(fn, body, arg)
+        finally:
+            if shm is not None:
+                self._free_shm(shm)
+
+    @staticmethod
+    def _free_shm(shm) -> None:
+        try:
+            shm.close()
+            shm.unlink()
+        except Exception:
+            pass
 
     def set_session_reuse(self, enabled: bool, max_uses: int = 300, reuse_static: bool = False) -> None:
         self._reuse = bool(enabled)

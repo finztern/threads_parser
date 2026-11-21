@@ -9,6 +9,7 @@
 services:
   parser:
     build: .
+    shm_size: 512m
     env_file: .env
     environment:
       STORE_ENDPOINT: ${STORE_ENDPOINT:-http://host.docker.internal:9000/store_items}
