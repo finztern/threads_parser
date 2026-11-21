@@ -48,6 +48,51 @@ services:
         max-file: "3"
     restart: unless-stopped
 
+  # Second parser process on the same machine (its own event loop, own state in ./data2). One asyncio loop tops out at
+  # ~85 req/s; two processes use the spare cores. Start with: docker compose --profile p2 up -d.
+  # Shards: with 2 machines use PARSER_SHARD=0/4 + PARSER2_SHARD=2/4 on one and 1/4 + 3/4 on the other.
+  parser2:
+    profiles: ["p2"]
+    build: .
+    shm_size: 512m
+    env_file: .env
+    environment:
+      STORE_ENDPOINT: ${STORE_ENDPOINT:-http://host.docker.internal:9000/store_items}
+      URL_CHECK_ENDPOINT: ${URL_CHECK_ENDPOINT:-}
+      TOR_HOST: ${TOR_HOST:-host.docker.internal}
+      PARSER_SHARD: ${PARSER2_SHARD:-}
+      PROFILE_SECONDS: ${PROFILE_SECONDS:-0}
+      # Pages are ~1 MB decoded and hundreds are in flight. With glibc's default (dynamic) mmap threshold such buffers end
+      # up in the fragmented heap and the RSS never shrinks. A fixed threshold keeps them in mmap, freed right away.
+      MALLOC_MMAP_THRESHOLD_: ${MALLOC_MMAP_THRESHOLD_:-262144}
+      MALLOC_TRIM_THRESHOLD_: ${MALLOC_TRIM_THRESHOLD_:-262144}
+      MALLOC_ARENA_MAX: ${MALLOC_ARENA_MAX:-2}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./proxies.txt:/app/proxies.txt:ro
+      - ./proxy-results:/proxy-results:ro
+      - ./vpn:/app/vpn:ro
+      - ./targets.txt:/app/targets.txt:ro
+      - ./config.yaml:/app/config.yaml
+      - ./debug2:/app/debug
+      - ./data2:/app/data
+    # Keep the host usable for other jobs: hard CPU cap plus low priority under contention.
+    cpus: ${PARSER_CPUS:-2.0}
+    cpu_shares: 256
+    # Hundreds of parallel proxy connections need many file descriptors.
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    # Rotate container logs: at most 3 x 20 MB on disk.
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    restart: unless-stopped
+
   # Development stand-in for the store_items collector (scripts/mock_collector.py): validates the schema,
   # drops duplicates, logs how many items per second would be accepted. Uploads nothing anywhere.
   # Enable: COMPOSE_PROFILES=tor,mock and STORE_ENDPOINT=http://collector:9000/store_items in .env.
