@@ -3,7 +3,7 @@
 #
 # Run inside the parser image (it has xray and the scraper package; requests go through curl_cffi, Chrome TLS impersonation):
 #   docker compose run --rm --no-deps -v "$PWD/scripts:/app/scripts:ro" parser bash /app/scripts/reddit_html_test.sh
-# Optional env: NODES=40  CONC=40 (workers)  SECONDS_RUN=180  VARIANTS=plain,limit100  URL_CHECK=off|<endpoint>  VPN_SOURCE=<subscription url>
+# Optional env: NODES=40  CONC=40 (workers)  SECONDS_RUN=180  VARIANTS=plain,limit100  URL_CHECK=off|<endpoint>  VPN_SOURCE=<subscription url or a local file path>
 #
 set -u
 
@@ -25,7 +25,12 @@ command -v xray >/dev/null 2>&1 || { echo "xray is not available (run this insid
 
 # ---- 1. nodes: download the list, test every node on its own (one bad node breaks the whole xray config) ----
 python3 - "$VPN_SOURCE" "$WORK/sub.txt" <<'PY' || { echo "cannot download $VPN_SOURCE"; exit 1; }
+import os
+import shutil
 import sys
+if os.path.isfile(sys.argv[1]):  # a local file (a subscription saved on the host, e.g. when the container cannot reach the site)
+    shutil.copy(sys.argv[1], sys.argv[2])
+    sys.exit(0)
 from curl_cffi import requests
 r = requests.get(sys.argv[1], impersonate="chrome124", timeout=30)
 r.raise_for_status()

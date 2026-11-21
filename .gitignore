@@ -19,3 +19,5 @@ home/.env
 home/keys/
 home/state/
 scripts/_samples/
+sub.txt
+sub_*.txt
