@@ -297,6 +297,7 @@ async def http_runner(
                     cfg.get("url_check_batch_size", 300),
                     cfg.get("url_check_min_batch", 30),
                     cfg.get("url_check_max_wait_seconds", 2.0),
+                    int(cfg.get("url_check_attempts", 1)),
                 )
                 fetch_replies = cfg.get("fetch_replies", True)
                 reply_max_age = cfg.get("reply_post_max_age_seconds", 7 * 86400)

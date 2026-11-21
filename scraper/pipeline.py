@@ -153,8 +153,12 @@ _URL_PENDING: list[tuple[list[str], asyncio.Future]] = []
 _URL_FLUSHER: asyncio.Task | None = None
 
 
-def configure_url_check(batch_size: int, min_batch: int, max_wait: float = 2.0) -> None:
-    global _URL_BATCH_SIZE, _URL_MIN_BATCH, _URL_MAX_WAIT_SECONDS
+_URL_ATTEMPTS = 1  # url_check_attempts: a failed check drops its urls at once (a retry stalls every waiting dispatch slot)
+
+
+def configure_url_check(batch_size: int, min_batch: int, max_wait: float = 2.0, attempts: int = 1) -> None:
+    global _URL_BATCH_SIZE, _URL_MIN_BATCH, _URL_MAX_WAIT_SECONDS, _URL_ATTEMPTS
+    _URL_ATTEMPTS = max(1, int(attempts))
     _URL_BATCH_SIZE = max(1, int(batch_size))
     _URL_MIN_BATCH = max(1, min(int(min_batch), _URL_BATCH_SIZE))
     _URL_MAX_WAIT_SECONDS = max(0.0, float(max_wait))
@@ -192,7 +196,7 @@ async def _query_url_check(
             return
         data: Any = None
         error: BaseException | None = None
-        for _attempt in range(2):  # the service sometimes never answers one request: retry (new proxy)
+        for _attempt in range(_URL_ATTEMPTS):  # the service sometimes never answers one request; default: drop, no retry
             try:
                 data = await _post_url_check(client, endpoint, part, timeout)
                 error = None
