@@ -30,6 +30,7 @@ from scraper.threads_parse import (
 )
 from scraper.constants import LOGGER
 from scraper.pipeline import RawThreadsPost
+from scraper.threads_graphql import BOOT_URL, GRAPHQL_URL, build_request, find_lsd, parse_graphql_replies
 from scraper.proxies import ProxyPool, mask_proxy, transport_options
 
 HEADERS = {"Accept-Language": "en-US,en;q=0.9"}
@@ -56,6 +57,28 @@ class ReplyTracker:
         self._counts.move_to_end(post_id)
         while len(self._counts) > self._max:
             self._counts.popitem(last=False)
+
+
+class _GqlSession:
+    """A curl session that already loaded a Threads page: it holds the lsd token the GraphQL query needs."""
+
+    __slots__ = ("session", "request_opts", "lsd", "uses", "lock", "seen")
+
+    def __init__(self, session, request_opts: dict) -> None:
+        self.session = session
+        self.request_opts = request_opts
+        self.lsd: str | None = None
+        self.uses = 0
+        self.lock = asyncio.Lock()
+        self.seen = time.monotonic()
+
+
+class _GqlRejected(Exception):
+    """The bootstrap page or the query was refused (HTTP status kept for the statistics)."""
+
+    def __init__(self, status: int, what: str) -> None:
+        super().__init__(f"{what} HTTP {status}")
+        self.status = status
 
 
 class ThreadsHttpClient:
@@ -96,9 +119,13 @@ class ThreadsHttpClient:
         self.stats: Counter[str] = Counter()
         self.error_kinds: Counter[str] = Counter()  # normalized transport error messages, per cycle
         self.status_kinds: Counter[str] = Counter()  # HTTP status / block reason of non-ok pages, per cycle
+        # Anonymous GraphQL sessions (one per proxy: the lsd token and cookies belong to the session).
+        self._gql: dict[str, _GqlSession] = {}
+        self._gql_uses_limit = 150
         self._executor: ProcessPoolExecutor | None = None
-        # PARSE_SHM=0 turns the shared-memory page transfer off (pages are pickled instead).
-        self._use_shm = os.environ.get("PARSE_SHM", "1").strip().lower() not in ("0", "false", "no", "off")
+        # PARSE_SHM=1 sends pages to the parse worker through shared memory instead of pickle. Measured: not faster
+        # (a new block per page costs more than the pickle it saves), so it is off by default.
+        self._use_shm = os.environ.get("PARSE_SHM", "0").strip().lower() in ("1", "true", "yes", "on")
         if parse_workers is not None:
             workers = parse_workers if parse_workers > 0 else max(1, min(os.cpu_count() or 2, 4))
             # "spawn": forking a process that already runs network threads is unsafe.
@@ -189,6 +216,9 @@ class ThreadsHttpClient:
         for proxy, seen in list(self._session_seen.items()):
             if seen < cutoff:
                 self._retire(proxy)
+        for proxy, entry in list(self._gql.items()):
+            if entry.seen < cutoff:
+                self._retire_gql(proxy)
 
     async def _get(self, proxy: str, src: str, url: str, timeout: float):
         session_opts, request_opts = transport_options(proxy)
@@ -339,6 +369,139 @@ class ThreadsHttpClient:
         return await self._fetch_parsed(
             f"{THREADS_BASE_URL}/@{username}/replies", _extract_ssr_user_replies, username, empty_retries=1
         )
+
+    def _retire_gql(self, proxy: str) -> None:
+        entry = self._gql.pop(proxy, None)
+        if entry is None:
+            return
+
+        async def _close() -> None:
+            await asyncio.sleep(60.0)
+            try:
+                await entry.session.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        asyncio.get_running_loop().create_task(_close())
+
+    async def _gql_request(self, proxy: str, page_url: str, post_pk: str, first: int, after: str | None, timeout: float) -> bytes:
+        """One replies query on the proxy's own session. The first use loads a small page for the lsd token."""
+        entry = self._gql.get(proxy)
+        if entry is None:
+            session_opts, request_opts = transport_options(proxy)
+            entry = self._gql[proxy] = _GqlSession(
+                AsyncSession(impersonate=self._impersonate, timeout=timeout, **session_opts), request_opts
+            )
+        entry.seen = time.monotonic()
+        try:
+            async with entry.lock:
+                if entry.lsd is None:
+                    boot = await entry.session.get(
+                        BOOT_URL, headers=HEADERS, allow_redirects=True, timeout=timeout, **entry.request_opts
+                    )
+                    self.stats["gql_boot"] += 1
+                    self.stats["bytes_gql_boot"] += len(boot.content)
+                    lsd = find_lsd(boot.text) if boot.status_code == 200 else None
+                    if not lsd:
+                        raise _GqlRejected(boot.status_code, "gql bootstrap")
+                    entry.lsd = lsd
+            data, headers = build_request(entry.lsd, page_url, post_pk, first, after)
+            csrf = entry.session.cookies.get("csrftoken")
+            if csrf:
+                headers["X-CSRFToken"] = csrf
+            response = await entry.session.post(
+                GRAPHQL_URL, data=data, headers=headers, timeout=timeout, **entry.request_opts
+            )
+        except Exception:
+            if self._gql.get(proxy) is entry:
+                self._retire_gql(proxy)  # a broken connection or an expired token must not be reused
+            raise
+        entry.uses += 1
+        if entry.uses >= self._gql_uses_limit and self._gql.get(proxy) is entry:
+            self._retire_gql(proxy)
+        if response.status_code != 200:
+            raise _GqlRejected(response.status_code, "gql")
+        return response.content
+
+    async def _gql_page(
+        self, page_url: str, post_pk: str, first: int, after: str | None
+    ) -> tuple[str, list[RawThreadsPost], str | None, bool]:
+        """One page of the newest replies through up to `attempts` different proxies: (label, replies, cursor, has_next)."""
+        for attempt in range(self._attempts):
+            await self._pace()
+            async with self._req_sem:
+                pick = getattr(self._pool, "next_retry", self._pool.next) if attempt > 0 else self._pool.next
+                proxy = pick()
+                self.stats["requests"] += 1
+                src = self._pool.source(proxy) if hasattr(self._pool, "source") else "pool"
+                timeout = self._static_timeout if (src in ("static", "vpn") and self._static_timeout > 0) else self._timeout
+                self.stats[f"src_{src}_requests"] += 1
+                try:
+                    body = await self._gql_request(proxy, page_url, post_pk, first, after, timeout)
+                except _GqlRejected as exc:
+                    self.stats["gql_rejected"] += 1
+                    self.status_kinds[f"{exc.status}_gql"] += 1
+                    if exc.status in (401, 403, 429) or exc.status >= 500:
+                        self.stats["blocked"] += 1
+                        self._pool.ban(proxy, 300.0 if exc.status == 429 else self._pool_cooldown())
+                    continue
+                except Exception as exc:  # noqa: BLE001 - transport problems, same handling as for pages
+                    self.stats["transport_errors"] += 1
+                    self.error_kinds[re.sub(r"\d+", "N", str(exc))[:90]] += 1
+                    if "timed out" in str(exc).lower() or "timeout" in str(exc).lower():
+                        self.stats["timeouts"] += 1
+                        self.stats[f"src_{src}_timeout"] += 1
+                        self._pool.ban(proxy, 60.0)
+                    else:
+                        self.stats["conn_errors"] += 1
+                        self.stats[f"src_{src}_error"] += 1
+                        self._conn_window.append(True)
+                        if not self._local_trouble():
+                            self._pool.ban(proxy, self._error_cooldown)
+                    continue
+            self._conn_window.append(False)
+            self.stats["bytes_gql"] += len(body)
+            self.stats["pages_gql"] += 1
+            ok, posts, cursor, has_next = await self._parse(parse_graphql_replies, body, post_pk)
+            if not ok:
+                self.stats["gql_bad_answer"] += 1
+                continue  # not a replies answer (error JSON): try another proxy
+            self._pool.ok(proxy)
+            self.stats[f"src_{src}_ok"] += 1
+            self.stats["gql_comments"] += len(posts)
+            return "ok", posts, cursor, has_next
+        return "failed", [], None, False
+
+    def _pool_cooldown(self) -> float:
+        return 120.0
+
+    async def fetch_recent_replies(
+        self, username: str, code: str, post_pk: str, first: int = 20, max_pages: int = 3, page_age_seconds: float = 600.0
+    ) -> tuple[str, list[RawThreadsPost]]:
+        """Newest replies of a post through the anonymous GraphQL query (sortOrder=RECENT).
+
+        Pages back in time while a page still holds at least 3 replies younger than `page_age_seconds` (older ones are
+        mostly known to Exorde already), at most `max_pages` requests. Label: "ok" (also with an empty list: nothing new) or
+        "failed" (the caller falls back to the post page).
+        """
+        page_url = f"{THREADS_BASE_URL}/@{username}/post/{code}"
+        collected: dict[str, RawThreadsPost] = {}
+        cursor: str | None = None
+        now = datetime.now(timezone.utc)
+        for page_no in range(max(1, max_pages)):
+            label, posts, cursor, has_next = await self._gql_page(page_url, post_pk, max(1, first), cursor)
+            if label != "ok":
+                if page_no == 0:
+                    return "failed", []
+                break  # a later page failed: keep what we have
+            for post in posts:
+                collected[post.external_id] = post
+            ages = [(now - p.created_at.astimezone(timezone.utc)).total_seconds() for p in posts]
+            # Threads of RECENT are ordered by activity, so a page can hold an old reply inside a fresh thread: judge the page
+            # by how many replies are still young, not by its oldest one.
+            if not has_next or not cursor or sum(1 for a in ages if a <= page_age_seconds) < 3:
+                break
+        return "ok", list(collected.values())
 
     async def fetch_post_replies(
         self, username: str, code: str, post_pk: str

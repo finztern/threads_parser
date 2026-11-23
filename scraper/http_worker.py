@@ -405,7 +405,22 @@ async def http_runner(
                         if stop_event.is_set():
                             return
                         try:
-                            label, replies = await client.fetch_post_replies(username, code, pk)
+                            if cfg.get("graphql_hot", False):
+                                # Newest replies through the anonymous GraphQL query (~6x fewer bytes per reply than the
+                                # post page, and it sees the replies the ranked page does not); the page is the fallback.
+                                label, replies = await client.fetch_recent_replies(
+                                    username,
+                                    code,
+                                    pk,
+                                    first=int(cfg.get("graphql_first", 20)),
+                                    max_pages=int(cfg.get("graphql_max_pages", 3)),
+                                    page_age_seconds=float(cfg.get("graphql_page_age_seconds", 600)),
+                                )
+                                if label == "failed":
+                                    client.stats["gql_fallback"] += 1
+                                    label, replies = await client.fetch_post_replies(username, code, pk)
+                            else:
+                                label, replies = await client.fetch_post_replies(username, code, pk)
                         except Exception:
                             totals["hot_error"] += 1
                             hot.retry_later(pk)
@@ -615,6 +630,18 @@ async def http_runner(
                         )
                     total_mb = sum(delta.get(f"bytes_{k}", 0) for k in ("tab", "post", "profile")) / 1e6
                     LOGGER.info("traffic (decoded): %s | total %.0f MB = %.1f MB/s", " | ".join(parts), total_mb, total_mb / span)
+                if delta.get("pages_gql") or delta.get("gql_boot") or delta.get("gql_fallback"):
+                    LOGGER.info(
+                        "graphql replies: pages=%d x %.0f KB, comments=%d, bootstrap=%d (%.0f KB each), rejected=%d, bad_answer=%d, fallback_to_page=%d",
+                        delta.get("pages_gql", 0),
+                        delta.get("bytes_gql", 0) / max(delta.get("pages_gql", 0), 1) / 1024,
+                        delta.get("gql_comments", 0),
+                        delta.get("gql_boot", 0),
+                        delta.get("bytes_gql_boot", 0) / max(delta.get("gql_boot", 0), 1) / 1024,
+                        delta.get("gql_rejected", 0),
+                        delta.get("gql_bad_answer", 0),
+                        delta.get("gql_fallback", 0),
+                    )
                 if client.status_kinds:
                     LOGGER.info(
                         "blocked/bad pages by status: %s",
