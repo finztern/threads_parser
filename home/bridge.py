@@ -1,8 +1,10 @@
 """Home bridge (runs at home in Docker with the host network).
 
-  xray (one vless node as a LOCAL SOCKS5 proxy, only this container uses it)
-    -> one `ssh -R` reverse tunnel per VPS, dialled through that SOCKS proxy (the VPS IPs are not reachable
-       from Russia directly, the vless exit is)
+  a local proxy: either the xray of this container (one vless node as a LOCAL SOCKS5 proxy, only this container uses
+  it) or, with BRIDGE_UPSTREAM_PROXY set, a proxy that already runs on the home machine (e.g. a VPN client's
+  "fastest node" proxy: socks5h://127.0.0.1:1080 or http://127.0.0.1:1081)
+    -> one `ssh -R` reverse tunnel per VPS, dialled through that proxy (the VPS IPs are not reachable
+       from Russia directly, the proxy exit is)
     -> every VPS listens on BRIDGE_REMOTE_BIND (the docker bridge gateway) and the parsers there POST to it;
        the data comes out of the tunnel at BRIDGE_LOCAL = your collector (127.0.0.1:9000 at home).
 
@@ -36,6 +38,24 @@ def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:
             return True
     except OSError:
         return False
+
+
+def parse_upstream(value: str) -> tuple[str, int, str]:
+    """BRIDGE_UPSTREAM_PROXY (socks5://, socks5h://, http://host:port) -> (host, port, nc proxy protocol: "5" or "connect")."""
+    scheme, sep, rest = value.strip().partition("://")
+    if not sep:
+        raise SystemExit(f"BRIDGE_UPSTREAM_PROXY must look like socks5h://127.0.0.1:1080 or http://127.0.0.1:1081, got {value!r}")
+    scheme = scheme.lower()
+    if scheme in ("socks5", "socks5h"):
+        proto = "5"
+    elif scheme in ("http", "https"):
+        proto = "connect"
+    else:
+        raise SystemExit(f"BRIDGE_UPSTREAM_PROXY: unsupported scheme {scheme!r} (use socks5h:// or http://)")
+    host, _, port = rest.rstrip("/").rpartition(":")
+    if not host or not port.isdigit():
+        raise SystemExit(f"BRIDGE_UPSTREAM_PROXY needs host:port, got {value!r}")
+    return host, int(port), proto
 
 
 async def _wait_or_stop(proc: asyncio.subprocess.Process, stop: asyncio.Event) -> int | None:
@@ -74,14 +94,14 @@ async def run_tunnel(target: str, cfg: dict, stop: asyncio.Event, state: dict) -
         "-o", f"UserKnownHostsFile={cfg['known_hosts']}",
         "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
         "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=30",
-        "-o", f"ProxyCommand=nc -X 5 -x 127.0.0.1:{cfg['socks_port']} %h %p",
+        "-o", f"ProxyCommand=nc -X {cfg['proxy_proto']} -x {cfg['proxy_host']}:{cfg['socks_port']} %h %p",
         "-R", f"{cfg['remote_bind']}:{cfg['local']}",
         "-p", port or "22",
         user_host,
     ]
     delay = 5.0
     while not stop.is_set():
-        if not _port_open("127.0.0.1", cfg["socks_port"]):
+        if not _port_open(cfg["proxy_host"], cfg["socks_port"]):
             await asyncio.sleep(2.0)
             continue
         proc = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.DEVNULL)
@@ -100,7 +120,7 @@ async def run_tunnel(target: str, cfg: dict, stop: asyncio.Event, state: dict) -
             await asyncio.wait_for(stop.wait(), timeout=delay)
 
 
-async def status_loop(targets: list[str], local: str, stop: asyncio.Event, state: dict) -> None:
+async def status_loop(targets: list[str], local: str, stop: asyncio.Event, state: dict, proxy_label: str) -> None:
     host, _, port = local.rpartition(":")
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(stop.wait(), timeout=15.0)  # let xray and the tunnels come up first
@@ -108,8 +128,7 @@ async def status_loop(targets: list[str], local: str, stop: asyncio.Event, state
         up = sum(1 for t in targets if t in state and time.monotonic() - state[t][1] >= 10)
         collector = "up" if _port_open(host or "127.0.0.1", int(port)) else "DOWN"
         level = logging.INFO if up == len(targets) and collector == "up" else logging.WARNING
-        LOG.log(level, "bridge: xray=%s tunnels up=%d/%d local collector %s=%s",
-                "up" if "xray" in state else "down", up, len(targets), local, collector)
+        LOG.log(level, "bridge: %s tunnels up=%d/%d local collector %s=%s", proxy_label(state), up, len(targets), local, collector)
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=60.0)
 
@@ -119,23 +138,34 @@ async def main() -> None:
     targets = [t.strip() for t in _env("BRIDGE_TARGETS", "").split(",") if t.strip()]
     if not targets:
         raise SystemExit("BRIDGE_TARGETS is empty: set user@host[,user@host...] in home/.env")
-    socks_port = int(_env("BRIDGE_SOCKS_PORT", "10808"))
+    upstream = _env("BRIDGE_UPSTREAM_PROXY", "")
+    if upstream:
+        # A proxy that already runs on the home machine: no vless link and no xray in this container.
+        proxy_host, socks_port, proxy_proto = parse_upstream(upstream)
+    else:
+        proxy_host, socks_port, proxy_proto = "127.0.0.1", int(_env("BRIDGE_SOCKS_PORT", "10808")), "5"
     cfg = {
         "key": _env("BRIDGE_SSH_KEY", "/keys/id_ed25519"),
         "known_hosts": _env("BRIDGE_KNOWN_HOSTS", "/state/known_hosts"),
         "socks_port": socks_port,
+        "proxy_host": proxy_host,
+        "proxy_proto": proxy_proto,
         # what the VPS listens on (the docker bridge gateway: containers reach it as host.docker.internal)
         "remote_bind": _env("BRIDGE_REMOTE_BIND", "172.17.0.1:9000"),
         # where the data goes at home
         "local": _env("BRIDGE_LOCAL", "127.0.0.1:9000"),
     }
-    nodes = load_nodes(Path(_env("BRIDGE_VLESS_FILE", "/data/vless.txt")))
-    if not nodes:
-        raise SystemExit("no usable vless:// link in the vless file")
     xray_config = Path("/tmp/xray.json")
-    xray_config.write_text(json.dumps(build_xray_config(nodes[:1], socks_port)), encoding="utf-8")
-    os.chmod(xray_config, 0o600)
-    LOG.info("bridge starting: %d VPS target(s), remote bind %s -> local %s", len(targets), cfg["remote_bind"], cfg["local"])
+    if not upstream:
+        nodes = load_nodes(Path(_env("BRIDGE_VLESS_FILE", "/data/vless.txt")))
+        if not nodes:
+            raise SystemExit("no usable vless:// link in the vless file (or set BRIDGE_UPSTREAM_PROXY to use a proxy that already runs)")
+        xray_config.write_text(json.dumps(build_xray_config(nodes[:1], socks_port)), encoding="utf-8")
+        os.chmod(xray_config, 0o600)
+    LOG.info(
+        "bridge starting: %d VPS target(s), remote bind %s -> local %s, proxy %s",
+        len(targets), cfg["remote_bind"], cfg["local"], upstream or f"own xray on 127.0.0.1:{socks_port}",
+    )
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -143,9 +173,16 @@ async def main() -> None:
         loop.add_signal_handler(sig, stop.set)
 
     state: dict = {}
-    tasks = [asyncio.create_task(run_xray(xray_config, stop, state))]
+    tasks = [] if upstream else [asyncio.create_task(run_xray(xray_config, stop, state))]
     tasks += [asyncio.create_task(run_tunnel(t, cfg, stop, state)) for t in targets]
-    tasks.append(asyncio.create_task(status_loop(targets, cfg["local"], stop, state)))
+
+    def proxy_label(current: dict) -> str:
+        if upstream:
+            host_port = f"{cfg['proxy_host']}:{cfg['socks_port']}"
+            return f"proxy {host_port}={'up' if _port_open(cfg['proxy_host'], cfg['socks_port']) else 'DOWN'}"
+        return f"xray={'up' if 'xray' in current else 'down'}"
+
+    tasks.append(asyncio.create_task(status_loop(targets, cfg["local"], stop, state, proxy_label)))
     await stop.wait()
     for value in list(state.values()):
         proc = value[0] if isinstance(value, tuple) else value
