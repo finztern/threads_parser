@@ -337,6 +337,8 @@ async def http_runner(
                                 label = ""
                             # The user's own replies (Replies tab): by far the best new-per-request source.
                             if tab_on and label in ("ok", ""):
+                                client._tab_gql = bool(cfg.get("graphql_tabs", False))
+                                client._tab_first = int(cfg.get("graphql_tab_first", 5))
                                 try:
                                     tab_label, tab_posts = await client.fetch_user_replies(username)
                                 except Exception:
@@ -630,6 +632,13 @@ async def http_runner(
                         )
                     total_mb = sum(delta.get(f"bytes_{k}", 0) for k in ("tab", "post", "profile")) / 1e6
                     LOGGER.info("traffic (decoded): %s | total %.0f MB = %.1f MB/s", " | ".join(parts), total_mb, total_mb / span)
+                if delta.get("gql_tab_ok") or delta.get("gql_tab_fallback"):
+                    LOGGER.info(
+                        "graphql tabs: ok=%d, fallback_to_page=%d (no userID yet or rejected), known userIDs=%d",
+                        delta.get("gql_tab_ok", 0),
+                        delta.get("gql_tab_fallback", 0),
+                        len(client._user_ids),
+                    )
                 if delta.get("pages_gql") or delta.get("gql_boot") or delta.get("gql_fallback"):
                     LOGGER.info(
                         "graphql replies: pages=%d x %.0f KB, comments=%d, bootstrap=%d (%.0f KB each), rejected=%d, bad_answer=%d, fallback_to_page=%d",

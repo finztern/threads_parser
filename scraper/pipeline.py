@@ -49,6 +49,7 @@ class RawThreadsPost:
         # Local-only hint (never sent): the top-level post this reply answers, for the hot post queue:
         # (username, code, pk, created_ts, direct_reply_count, reply_ts). Kept out of `extra`, which goes into the summary.
         self.hot_parent: tuple[str, str, str, float, int, float] | None = None
+        self.author_pk = ""  # local-only: numeric id of the author (needed by the GraphQL tab query)
 
 
 def build_payload(post: RawThreadsPost) -> dict[str, Any]:

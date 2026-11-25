@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from scraper.pipeline import RawThreadsPost
-from scraper.threads_parse import THREADS_BASE_URL, _extract_reply_posts, _loads
+from scraper.threads_parse import THREADS_BASE_URL, _extract_reply_posts, _loads, _user_replies_from_data
 
 GRAPHQL_URL = f"{THREADS_BASE_URL}/api/graphql"
 BOOT_URL = f"{THREADS_BASE_URL}/t/news"  # ~280 KB page that carries an lsd token (the post page is ~1 MB)
@@ -123,3 +123,122 @@ def parse_graphql_replies(text: str, post_pk: str) -> tuple[bool, list[RawThread
         return False, [], None, False
     posts = _extract_reply_posts(data, str(post_pk))
     return True, posts, info.get("end_cursor"), bool(info.get("has_next_page"))
+
+
+# --- "Replies" tab of a profile: BarcelonaProfileRepliesTabRefetchableDirectQuery (logged-out web client) ---
+TAB_URL = f"{THREADS_BASE_URL}/graphql/query"
+TAB_QUERY_NAME = "BarcelonaProfileRepliesTabRefetchableDirectQuery"
+TAB_DOC_ID = "29222313014046534"
+TAB_RELAY_FLAGS: dict[str, bool] = {
+    "__relay_internal__pv__BarcelonaIsLoggedInrelayprovider": False,
+    "__relay_internal__pv__BarcelonaShouldFetchPostAuthorFullNamerelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasLocalTrendLabelInFeedrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasDearAlgoConsumptionrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasMetaAiContentAttachmentsrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasMWRConsumptionrelayprovider": False,
+    "__relay_internal__pv__BarcelonaMessagesHasLiveChatMessagingrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasEventBadgerelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasAMAConsumptionrelayprovider": True,
+    "__relay_internal__pv__BarcelonaMessagingHasMetaAIBotrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasMembersOnlyReplyConsumptionrelayprovider": False,
+    "__relay_internal__pv__BarcelonaGenAIRepliesEnabledrelayprovider": False,
+    "__relay_internal__pv__BarcelonaQuotedPostParentCaptionEnabledrelayprovider": True,
+    "__relay_internal__pv__BarcelonaIsSearchDiscoveryEnabledrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasCommunitiesrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasGameScoreSharerelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasInsightsMetricShareCardrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasMiddlemistConsumptionrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasPublicViewCountCardrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasCommunityEmojiUpdateCardrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasCommunityEntityCardrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasCommunityIntroCardrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasCommunityChampionCardrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasCommunityFounderCardrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasScorecardCommunityrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasSportTeamAllegianceCardrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasStitchedAttachmentrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasNewspaperLinkStylerelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasMessagingrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasProfileUpdatePostrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasLiveChatHostlessUIrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasThreadsFriendsApplicationrelayprovider": True,
+    "__relay_internal__pv__BarcelonaOptionalCookiesEnabledrelayprovider": True,
+    "__relay_internal__pv__BarcelonaShouldFulfillLightboxQueryrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasUnseenRepliesrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasWebFaviconsrelayprovider": True,
+    "__relay_internal__pv__BarcelonaIsCrawlerrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasDearAlgoWebProductionrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasCommunityTopContributorsrelayprovider": False,
+    "__relay_internal__pv__BarcelonaIsDesktoprelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasTopLevelSaveButtonrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasUFINotInterestedrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasCustomLikesConsumptionrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasViewerRepliedrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasPrivateRepliesDeprecationrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasGhostPostEmojiActivationrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasGhostPostProductionrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasKeyboardShortcutsrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasSaveCountrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasNewsletterLinkPreviewrelayprovider": False,
+    "__relay_internal__pv__BarcelonaIsLoggedOutShareTestEnabledrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasAdditionalLikeCountrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasPodcastTranscriptConsumptionrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasPodcastV2Consumptionrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasPublicViewCountShareCardrelayprovider": False,
+    "__relay_internal__pv__BarcelonaShouldShowFediverseM075Featuresrelayprovider": False,
+    "__relay_internal__pv__BarcelonaIsInternalUserrelayprovider": False,
+}
+
+
+def build_tab_request(lsd: str, page_url: str, user_id: str, first: int) -> tuple[str, dict[str, str]]:
+    """(form body, headers) of one Replies-tab query. Logged out, only the first page exists (no pagination)."""
+    variables = {
+        "after": None,
+        "allow_page_info_for_lox_user": False,
+        "before": None,
+        "first": int(first),
+        "last": None,
+        "userID": str(user_id),
+        **TAB_RELAY_FLAGS,
+    }
+    body = {
+        "av": "0",
+        "__user": "0",
+        "__a": "1",
+        "__req": "a",
+        "__comet_req": "122",
+        "lsd": lsd,
+        "__crn": "comet.barcelonawebloggedout.BarcelonaProfileRepliesColumnRoute",
+        "fb_api_caller_class": "RelayModern",
+        "fb_api_req_friendly_name": TAB_QUERY_NAME,
+        "variables": json.dumps(variables, separators=(",", ":")),
+        "server_timestamps": "true",
+        "doc_id": TAB_DOC_ID,
+    }
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": THREADS_BASE_URL,
+        "Referer": page_url,
+        "X-FB-LSD": lsd,
+        "X-FB-Friendly-Name": TAB_QUERY_NAME,
+        "X-IG-App-ID": APP_ID,
+        "X-ASBD-ID": "359341",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+    return urlencode(body), headers
+
+
+def parse_graphql_tab(text: str, username: str) -> tuple[bool, list[RawThreadsPost]]:
+    """(ok, replies written by @username). ok=False: not a tab answer (error JSON, expired lsd...)."""
+    if text.startswith("for (;;);"):
+        text = text[9:]
+    try:
+        data: Any = _loads(text)
+        edges = data["data"]["mediaData"]["edges"]
+    except (ValueError, KeyError, TypeError):
+        return False, []
+    if not isinstance(edges, list):
+        return False, []
+    return True, _user_replies_from_data(data, username)

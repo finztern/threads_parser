@@ -30,7 +30,16 @@ from scraper.threads_parse import (
 )
 from scraper.constants import LOGGER
 from scraper.pipeline import RawThreadsPost
-from scraper.threads_graphql import BOOT_URL, GRAPHQL_URL, build_request, find_lsd, parse_graphql_replies
+from scraper.threads_graphql import (
+    BOOT_URL,
+    GRAPHQL_URL,
+    TAB_URL,
+    build_request,
+    build_tab_request,
+    find_lsd,
+    parse_graphql_replies,
+    parse_graphql_tab,
+)
 from scraper.proxies import ProxyPool, mask_proxy, transport_options
 
 HEADERS = {"Accept-Language": "en-US,en;q=0.9"}
@@ -122,6 +131,9 @@ class ThreadsHttpClient:
         # Anonymous GraphQL sessions (one per proxy: the lsd token and cookies belong to the session).
         self._gql: dict[str, _GqlSession] = {}
         self._gql_uses_limit = 150
+        self._user_ids: dict[str, str] = {}  # username (lower) -> numeric id, learned from parsed pages
+        self._tab_gql = False  # Replies tab through GraphQL (set by the worker from config graphql_tabs)
+        self._tab_first = 5
         self._executor: ProcessPoolExecutor | None = None
         # PARSE_SHM=1 sends pages to the parse worker through shared memory instead of pickle. Measured: not faster
         # (a new block per page costs more than the pickle it saves), so it is off by default.
@@ -361,14 +373,23 @@ class ThreadsHttpClient:
         return last, []
 
     async def fetch_profile(self, username: str) -> tuple[str, list[RawThreadsPost]]:
-        return await self._fetch_parsed(f"{THREADS_BASE_URL}/@{username}", _extract_ssr_feed_posts, username)
+        label, posts = await self._fetch_parsed(f"{THREADS_BASE_URL}/@{username}", _extract_ssr_feed_posts, username)
+        self.learn_user_ids(posts)
+        return label, posts
 
     async def fetch_user_replies(self, username: str) -> tuple[str, list[RawThreadsPost]]:
         """Replies written by @username (the "Replies" tab). Nothing found is normal (the user did not
         reply lately), so an empty page is not retried."""
-        return await self._fetch_parsed(
+        if self._tab_gql:
+            label, posts = await self.fetch_user_replies_gql(username)
+            if label == "ok":
+                return ("ok" if posts else "empty"), posts
+            self.stats["gql_tab_fallback"] += 1
+        label, posts = await self._fetch_parsed(
             f"{THREADS_BASE_URL}/@{username}/replies", _extract_ssr_user_replies, username, empty_retries=1
         )
+        self.learn_user_ids(posts)
+        return label, posts
 
     def _retire_gql(self, proxy: str) -> None:
         entry = self._gql.pop(proxy, None)
@@ -384,7 +405,7 @@ class ThreadsHttpClient:
 
         asyncio.get_running_loop().create_task(_close())
 
-    async def _gql_request(self, proxy: str, page_url: str, post_pk: str, first: int, after: str | None, timeout: float) -> bytes:
+    async def _gql_request(self, proxy: str, make: Callable[[str], tuple[str, str, dict[str, str]]], timeout: float) -> bytes:
         """One replies query on the proxy's own session. The first use loads a small page for the lsd token."""
         entry = self._gql.get(proxy)
         if entry is None:
@@ -405,12 +426,12 @@ class ThreadsHttpClient:
                     if not lsd:
                         raise _GqlRejected(boot.status_code, "gql bootstrap")
                     entry.lsd = lsd
-            data, headers = build_request(entry.lsd, page_url, post_pk, first, after)
+            url, data, headers = make(entry.lsd)
             csrf = entry.session.cookies.get("csrftoken")
             if csrf:
                 headers["X-CSRFToken"] = csrf
             response = await entry.session.post(
-                GRAPHQL_URL, data=data, headers=headers, timeout=timeout, **entry.request_opts
+                url, data=data, headers=headers, timeout=timeout, **entry.request_opts
             )
         except Exception:
             if self._gql.get(proxy) is entry:
@@ -427,6 +448,43 @@ class ThreadsHttpClient:
         self, page_url: str, post_pk: str, first: int, after: str | None
     ) -> tuple[str, list[RawThreadsPost], str | None, bool]:
         """One page of the newest replies through up to `attempts` different proxies: (label, replies, cursor, has_next)."""
+
+        def make(lsd: str) -> tuple[str, str, dict[str, str]]:
+            data, headers = build_request(lsd, page_url, post_pk, first, after)
+            return GRAPHQL_URL, data, headers
+
+        label, posts, cursor, has_next = await self._gql_run(make, parse_graphql_replies, post_pk)
+        return label, posts, cursor, has_next
+
+    async def fetch_user_replies_gql(self, username: str) -> tuple[str, list[RawThreadsPost]]:
+        """Replies written by @username through the anonymous Replies-tab query: ~3x fewer bytes than the tab page.
+        Needs the numeric userID (learned from earlier pages). Label "ok" (also empty list) or "failed" (caller falls back)."""
+        user_id = self._user_ids.get(username.lower())
+        if not user_id:
+            return "failed", []
+        page_url = f"{THREADS_BASE_URL}/@{username}/replies"
+        first = self._tab_first
+
+        def make(lsd: str) -> tuple[str, str, dict[str, str]]:
+            data, headers = build_tab_request(lsd, page_url, user_id, first)
+            return TAB_URL, data, headers
+
+        label, posts, _cursor, _more = await self._gql_run(make, parse_graphql_tab, username, tab=True)
+        if label == "ok":
+            self.stats["gql_tab_ok"] += 1
+        return label, posts
+
+    def learn_user_ids(self, posts: list[RawThreadsPost]) -> None:
+        """Remember username -> numeric id from parsed pages (the GraphQL tab query needs the id)."""
+        for post in posts:
+            pk = getattr(post, "author_pk", "")
+            if pk and post.username:
+                if len(self._user_ids) > 300_000 and post.username.lower() not in self._user_ids:
+                    continue
+                self._user_ids[post.username.lower()] = pk
+
+    async def _gql_run(self, make, parse_fn, arg: str, tab: bool = False):
+        """Shared transport of both GraphQL queries: (label, posts, cursor, has_next)."""
         for attempt in range(self._attempts):
             await self._pace()
             async with self._req_sem:
@@ -437,7 +495,7 @@ class ThreadsHttpClient:
                 timeout = self._static_timeout if (src in ("static", "vpn") and self._static_timeout > 0) else self._timeout
                 self.stats[f"src_{src}_requests"] += 1
                 try:
-                    body = await self._gql_request(proxy, page_url, post_pk, first, after, timeout)
+                    body = await self._gql_request(proxy, make, timeout)
                 except _GqlRejected as exc:
                     self.stats["gql_rejected"] += 1
                     self.status_kinds[f"{exc.status}_gql"] += 1
@@ -462,7 +520,11 @@ class ThreadsHttpClient:
             self._conn_window.append(False)
             self.stats["bytes_gql"] += len(body)
             self.stats["pages_gql"] += 1
-            ok, posts, cursor, has_next = await self._parse(parse_graphql_replies, body, post_pk)
+            if tab:
+                ok, posts = await self._parse(parse_graphql_tab, body, arg)
+                cursor, has_next = None, False
+            else:
+                ok, posts, cursor, has_next = await self._parse(parse_fn, body, arg)
             if not ok:
                 self.stats["gql_bad_answer"] += 1
                 continue  # not a replies answer (error JSON): try another proxy

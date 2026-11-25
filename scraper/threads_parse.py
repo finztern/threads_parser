@@ -81,7 +81,7 @@ def _parse_post_node(node: dict[str, Any], external_parent_id: str) -> RawThread
         or (node.get("image_versions2") or {}).get("candidates")
         or node.get("media_type") in (1, 2, 8)
     )
-    return RawThreadsPost(
+    parsed_post = RawThreadsPost(
         external_id=str(pk),
         content=content,
         created_at=datetime.fromtimestamp(taken_at, tz=timezone.utc),
@@ -100,6 +100,8 @@ def _parse_post_node(node: dict[str, Any], external_parent_id: str) -> RawThread
         },
         picture=picture,
     )
+    parsed_post.author_pk = str(user.get("pk") or "")  # local hint (userID of the GraphQL tab query), never sent
+    return parsed_post
 
 
 try:  # orjson parses JSON several times faster and with less memory than json
@@ -194,6 +196,30 @@ def _hot_parent(parent: dict[str, Any], reply: dict[str, Any]) -> tuple[str, str
         return None
 
 
+def _user_replies_from_data(data: Any, username: str) -> list[RawThreadsPost]:
+    """Replies by @username from any JSON holding thread nodes (page block or GraphQL answer; same shape)."""
+    posts: dict[str, RawThreadsPost] = {}
+    wanted = username.lower()
+    for node in _walk_thread_nodes(data):
+        items = [(i or {}).get("post") or {} for i in node["thread_items"]]
+        for index, post in enumerate(items):
+            tpai = post.get("text_post_app_info") or {}
+            if _author_of(post) != wanted or not tpai.get("is_reply") or index == 0:
+                continue
+            parent = items[index - 1]
+            parent_pk = parent.get("pk")
+            if not parent_pk:
+                continue
+            named = _reply_to_name(tpai)
+            if named and named != _author_of(parent):
+                continue
+            parsed = _parse_post_node(post, external_parent_id=str(parent_pk))
+            if parsed:
+                parsed.hot_parent = _hot_parent(parent, post)
+                posts[parsed.external_id] = parsed
+    return list(posts.values())
+
+
 def _extract_ssr_user_replies(html: str, username: str) -> list[RawThreadsPost]:
     """Replies written BY @username, from the "Replies" tab page (/@username/replies).
 
@@ -204,29 +230,13 @@ def _extract_ssr_user_replies(html: str, username: str) -> list[RawThreadsPost]:
     node is skipped too (Exorde needs the real parent id).
     """
     posts: dict[str, RawThreadsPost] = {}
-    wanted = username.lower()
     for raw in _sjs_blocks(html, "thread_items"):
         try:
             data = _loads(raw)
         except ValueError:
             continue
-        for node in _walk_thread_nodes(data):
-            items = [(i or {}).get("post") or {} for i in node["thread_items"]]
-            for index, post in enumerate(items):
-                tpai = post.get("text_post_app_info") or {}
-                if _author_of(post) != wanted or not tpai.get("is_reply") or index == 0:
-                    continue
-                parent = items[index - 1]
-                parent_pk = parent.get("pk")
-                if not parent_pk:
-                    continue
-                named = _reply_to_name(tpai)
-                if named and named != _author_of(parent):
-                    continue
-                parsed = _parse_post_node(post, external_parent_id=str(parent_pk))
-                if parsed:
-                    parsed.hot_parent = _hot_parent(parent, post)
-                    posts[parsed.external_id] = parsed
+        for parsed in _user_replies_from_data(data, username):
+            posts[parsed.external_id] = parsed
     return list(posts.values())
 
 
