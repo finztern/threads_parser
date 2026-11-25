@@ -220,6 +220,30 @@ def _user_replies_from_data(data: Any, username: str) -> list[RawThreadsPost]:
     return list(posts.values())
 
 
+def _search_posts_from_data(data: Any) -> list[RawThreadsPost]:
+    """Posts of a search answer: top-level posts (parent id "") and replies whose parent is the item shown right above
+    them in the same node. A reply without such a parent item is skipped (Exorde needs the real parent id)."""
+    posts: dict[str, RawThreadsPost] = {}
+    for node in _walk_thread_nodes(data):
+        items = [(i or {}).get("post") or {} for i in node["thread_items"]]
+        for index, post in enumerate(items):
+            tpai = post.get("text_post_app_info") or {}
+            if tpai.get("is_reply"):
+                parent = items[index - 1] if index > 0 else {}
+                parent_pk = parent.get("pk")
+                if not parent_pk:
+                    continue
+                named = _reply_to_name(tpai)
+                if named and named != _author_of(parent):
+                    continue
+                parsed = _parse_post_node(post, external_parent_id=str(parent_pk))
+            else:
+                parsed = _parse_post_node(post, external_parent_id="")
+            if parsed:
+                posts[parsed.external_id] = parsed
+    return list(posts.values())
+
+
 def _extract_ssr_user_replies(html: str, username: str) -> list[RawThreadsPost]:
     """Replies written BY @username, from the "Replies" tab page (/@username/replies).
 

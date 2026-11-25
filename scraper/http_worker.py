@@ -23,6 +23,7 @@ from scraper.hotposts import HotPosts
 from scraper.http_client import ReplyTracker, ThreadsHttpClient, make_url_check_poster
 from scraper.proxies import ProxyPool
 from scraper.mixed_pool import MixedPool
+from scraper.search_words import SearchWords, parse_shard
 from scraper.shard import make_owner
 from scraper.ipv6_pool import Ipv6Pool
 from scraper.tor_pool import TorPool
@@ -219,6 +220,8 @@ async def http_runner(
     job_done = asyncio.Event()
     inflight_targets: set[str] = set()  # profiles being fetched right now (never started twice)
     inflight_hot: set[str] = set()  # post pks being fetched right now
+    inflight_search: set[str] = set()  # search words being fetched right now
+    search_words = SearchWords(config_store.get().get("search_words") or None, parse_shard(os.getenv("PARSER_SHARD", "")))
 
     def spawn(coro, bag: set[str], key: str) -> None:
         async def guarded() -> None:
@@ -460,6 +463,41 @@ async def http_runner(
                     totals[f"hot_{kind}_new"] += new
                     hot.report(pk, new)
 
+                async def search_job(word: str) -> None:
+                    async with sem:
+                        if stop_event.is_set():
+                            return
+                        try:
+                            label, found = await client.fetch_search(word)
+                        except Exception:
+                            totals["search_error"] += 1
+                            LOGGER.exception("search %r failed", word)
+                            return
+                    totals["search_pages"] += 1
+                    if label != "ok":
+                        totals["search_failed"] += 1
+                        return
+                    if not found:
+                        return
+                    if hot is not None:
+                        # Fresh top-level posts with replies feed the hot queue (their replies come through GraphQL).
+                        totals["hot_search_added"] += hot.observe(found)
+                    if discovery_on:
+                        totals["discovered"] += registry.observe({p.username for p in found})
+                    try:
+                        async with dispatch_sem:
+                            result = await dispatch_posts(found, cfg, store_client, token_bucket, seen_cache)
+                        totals.update(result)
+                        totals["search_new"] += result["to_send"] + result["rate_limited"]
+                    except Exception:
+                        totals["dispatch_error"] += 1
+                        LOGGER.exception("dispatch for search %r failed", word)
+
+                # Newest-first search: a stream of fresh posts without scraping profiles (search_on, default off).
+                if cfg.get("search_on", False):
+                    for w in search_words.take(int(cfg.get("search_per_cycle", 40))):
+                        if w not in inflight_search:
+                            spawn(search_job(w), inflight_search, w)
                 # Hot posts go first: the request semaphore serves them before the profile fetches.
                 for u, c, k in hot_batch:
                     spawn(hot_job(u, c, k), inflight_hot, k)
@@ -632,6 +670,16 @@ async def http_runner(
                         )
                     total_mb = sum(delta.get(f"bytes_{k}", 0) for k in ("tab", "post", "profile")) / 1e6
                     LOGGER.info("traffic (decoded): %s | total %.0f MB = %.1f MB/s", " | ".join(parts), total_mb, total_mb / span)
+                if totals["search_pages"]:
+                    LOGGER.info(
+                        "search: words=%d ok=%d failed=%d posts=%d new_to_send=%d added_to_hot=%d",
+                        totals["search_pages"],
+                        delta.get("search_ok", 0),
+                        totals["search_failed"],
+                        delta.get("search_posts", 0),
+                        totals["search_new"],
+                        totals["hot_search_added"],
+                    )
                 if delta.get("gql_tab_ok") or delta.get("gql_tab_fallback"):
                     LOGGER.info(
                         "graphql tabs: ok=%d, fallback_to_page=%d (no userID yet or rejected), known userIDs=%d",

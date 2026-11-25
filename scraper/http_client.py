@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 import multiprocessing
 import os
 import re
@@ -35,9 +36,11 @@ from scraper.threads_graphql import (
     GRAPHQL_URL,
     TAB_URL,
     build_request,
+    build_search_request,
     build_tab_request,
     find_lsd,
     parse_graphql_replies,
+    parse_graphql_search,
     parse_graphql_tab,
 )
 from scraper.proxies import ProxyPool, mask_proxy, transport_options
@@ -134,6 +137,7 @@ class ThreadsHttpClient:
         self._user_ids: dict[str, str] = {}  # username (lower) -> numeric id, learned from parsed pages
         self._tab_gql = False  # Replies tab through GraphQL (set by the worker from config graphql_tabs)
         self._tab_first = 5
+        self._gql_block: dict[str, float] = {}  # exit -> monotonic time until which GraphQL avoids it
         self._executor: ProcessPoolExecutor | None = None
         # PARSE_SHM=1 sends pages to the parse worker through shared memory instead of pickle. Measured: not faster
         # (a new block per page costs more than the pickle it saves), so it is off by default.
@@ -441,9 +445,6 @@ class ThreadsHttpClient:
         if entry.uses >= self._gql_uses_limit and self._gql.get(proxy) is entry:
             self._retire_gql(proxy)
         if response.status_code != 200:
-            # An old token/cookie set is the usual reason: drop the session so the next request starts clean.
-            if self._gql.get(proxy) is entry:
-                self._retire_gql(proxy)
             raise _GqlRejected(response.status_code, "gql")
         return response.content
 
@@ -477,6 +478,21 @@ class ThreadsHttpClient:
             self.stats["gql_tab_ok"] += 1
         return label, posts
 
+    async def fetch_search(self, word: str) -> tuple[str, list[RawThreadsPost]]:
+        """Newest posts containing `word` (anonymous search, recent=1): ~12 posts per request, minutes old.
+        Label "ok" (also with an empty list) or "failed"."""
+        session_id = str(uuid.uuid4())
+
+        def make(lsd: str) -> tuple[str, str, dict[str, str]]:
+            data, headers = build_search_request(lsd, word, session_id)
+            return TAB_URL, data, headers  # same /graphql/query endpoint
+
+        label, posts, _cursor, _more = await self._gql_run(make, parse_graphql_search, word, tab=True)
+        if label == "ok":
+            self.stats["search_ok"] += 1
+            self.stats["search_posts"] += len(posts)
+        return label, posts
+
     def learn_user_ids(self, posts: list[RawThreadsPost]) -> None:
         """Remember username -> numeric id from parsed pages (the GraphQL tab query needs the id)."""
         for post in posts:
@@ -493,6 +509,10 @@ class ThreadsHttpClient:
             async with self._req_sem:
                 pick = getattr(self._pool, "next_retry", self._pool.next) if attempt > 0 else self._pool.next
                 proxy = pick()
+                for _ in range(6):  # skip exits the GraphQL endpoint rate-limited a moment ago
+                    if self._gql_block.get(proxy, 0.0) <= time.monotonic():
+                        break
+                    proxy = self._pool.next()
                 self.stats["requests"] += 1
                 src = self._pool.source(proxy) if hasattr(self._pool, "source") else "pool"
                 timeout = self._static_timeout if (src in ("static", "vpn") and self._static_timeout > 0) else self._timeout
@@ -503,7 +523,10 @@ class ThreadsHttpClient:
                     self.stats["gql_rejected"] += 1
                     self.status_kinds[f"{exc.status}_gql"] += 1
                     if exc.status == 401:
-                        continue  # stale session, already retired: the proxy itself is fine, retry on a fresh session
+                        # "Please wait a few minutes": a rate limit of the GraphQL endpoint on this exit, not a stale token.
+                        # Only GraphQL avoids this exit for a while; page fetches keep using it.
+                        self._gql_block[proxy] = time.monotonic() + 180.0
+                        continue
                     if exc.status in (403, 429) or exc.status >= 500:
                         self.stats["blocked"] += 1
                         self._pool.ban(proxy, 300.0 if exc.status == 429 else self._pool_cooldown())
@@ -526,14 +549,13 @@ class ThreadsHttpClient:
             self.stats["bytes_gql"] += len(body)
             self.stats["pages_gql"] += 1
             if tab:
-                ok, posts = await self._parse(parse_graphql_tab, body, arg)
+                ok, posts = await self._parse(parse_fn, body, arg)  # parsers of single-page queries return (ok, posts)
                 cursor, has_next = None, False
             else:
                 ok, posts, cursor, has_next = await self._parse(parse_fn, body, arg)
             if not ok:
                 self.stats["gql_bad_answer"] += 1
-                self._retire_gql(proxy)  # error JSON = expired token: start a new session next time
-                continue  # try another proxy
+                continue  # not a replies answer (error JSON, rate limit): try another proxy
             self._pool.ok(proxy)
             self.stats[f"src_{src}_ok"] += 1
             self.stats["gql_comments"] += len(posts)

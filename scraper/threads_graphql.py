@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from scraper.pipeline import RawThreadsPost
-from scraper.threads_parse import THREADS_BASE_URL, _extract_reply_posts, _loads, _user_replies_from_data
+from scraper.threads_parse import THREADS_BASE_URL, _extract_reply_posts, _loads, _search_posts_from_data, _user_replies_from_data
 
 GRAPHQL_URL = f"{THREADS_BASE_URL}/api/graphql"
 BOOT_URL = f"{THREADS_BASE_URL}/t/news"  # ~280 KB page that carries an lsd token (the post page is ~1 MB)
@@ -242,3 +242,64 @@ def parse_graphql_tab(text: str, username: str) -> tuple[bool, list[RawThreadsPo
     if not isinstance(edges, list):
         return False, []
     return True, _user_replies_from_data(data, username)
+
+
+# --- Search, newest first: BarcelonaSearchResultsQuery with recent=1 (works logged out, one page per word) ---
+SEARCH_QUERY_NAME = "BarcelonaSearchResultsQuery"
+SEARCH_DOC_ID = "29794646893463541"
+
+
+def build_search_request(lsd: str, word: str, session_id: str) -> tuple[str, dict[str, str]]:
+    """(form body, headers) of one newest-first search for `word`."""
+    variables = {
+        "meta_place_id": None,
+        "power_search_info": None,
+        "query": word,
+        "recent": 1,
+        "requested_subtab": None,
+        "search_surface": None,
+        "serp_session_id": session_id,
+        "tagID": None,
+        "trend_fbid": None,
+    }
+    body = {
+        "av": "0",
+        "__user": "0",
+        "__a": "1",
+        "__req": "1",
+        "__comet_req": "122",
+        "lsd": lsd,
+        "fb_api_caller_class": "RelayModern",
+        "fb_api_req_friendly_name": SEARCH_QUERY_NAME,
+        "variables": json.dumps(variables, separators=(",", ":")),
+        "server_timestamps": "true",
+        "doc_id": SEARCH_DOC_ID,
+    }
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": THREADS_BASE_URL,
+        "Referer": f"{THREADS_BASE_URL}/search?q={word}&serp_type=default",
+        "X-FB-LSD": lsd,
+        "X-FB-Friendly-Name": SEARCH_QUERY_NAME,
+        "X-IG-App-ID": APP_ID,
+        "X-ASBD-ID": "359341",
+        "X-Logged-Out-Threads-Migrated-Request": "true",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+    return urlencode(body), headers
+
+
+def parse_graphql_search(text: str, word: str) -> tuple[bool, list[RawThreadsPost]]:
+    """(ok, posts). ok=False: not a search answer (error JSON, rate limit...)."""
+    if text.startswith("for (;;);"):
+        text = text[9:]
+    try:
+        data: Any = _loads(text)
+        edges = data["data"]["searchResults"]["edges"]
+    except (ValueError, KeyError, TypeError):
+        return False, []
+    if not isinstance(edges, list):
+        return False, []
+    return True, _search_posts_from_data(data)
