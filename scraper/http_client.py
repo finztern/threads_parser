@@ -441,6 +441,9 @@ class ThreadsHttpClient:
         if entry.uses >= self._gql_uses_limit and self._gql.get(proxy) is entry:
             self._retire_gql(proxy)
         if response.status_code != 200:
+            # An old token/cookie set is the usual reason: drop the session so the next request starts clean.
+            if self._gql.get(proxy) is entry:
+                self._retire_gql(proxy)
             raise _GqlRejected(response.status_code, "gql")
         return response.content
 
@@ -499,7 +502,9 @@ class ThreadsHttpClient:
                 except _GqlRejected as exc:
                     self.stats["gql_rejected"] += 1
                     self.status_kinds[f"{exc.status}_gql"] += 1
-                    if exc.status in (401, 403, 429) or exc.status >= 500:
+                    if exc.status == 401:
+                        continue  # stale session, already retired: the proxy itself is fine, retry on a fresh session
+                    if exc.status in (403, 429) or exc.status >= 500:
                         self.stats["blocked"] += 1
                         self._pool.ban(proxy, 300.0 if exc.status == 429 else self._pool_cooldown())
                     continue
@@ -527,7 +532,8 @@ class ThreadsHttpClient:
                 ok, posts, cursor, has_next = await self._parse(parse_fn, body, arg)
             if not ok:
                 self.stats["gql_bad_answer"] += 1
-                continue  # not a replies answer (error JSON): try another proxy
+                self._retire_gql(proxy)  # error JSON = expired token: start a new session next time
+                continue  # try another proxy
             self._pool.ok(proxy)
             self.stats[f"src_{src}_ok"] += 1
             self.stats["gql_comments"] += len(posts)
