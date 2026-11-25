@@ -247,6 +247,7 @@ def parse_graphql_tab(text: str, username: str) -> tuple[bool, list[RawThreadsPo
 # --- Search, newest first: BarcelonaSearchResultsQuery with recent=1 (works logged out, one page per word) ---
 SEARCH_QUERY_NAME = "BarcelonaSearchResultsQuery"
 SEARCH_DOC_ID = "29794646893463541"
+SEARCH_SESSION = "7q6xvs:7omza1:xoscma"
 
 
 def build_search_request(lsd: str, word: str, session_id: str) -> tuple[str, dict[str, str]]:
@@ -267,8 +268,19 @@ def build_search_request(lsd: str, word: str, session_id: str) -> tuple[str, dic
         "__user": "0",
         "__a": "1",
         "__req": "1",
+        # Build fields of the web client (copied from a HAR, public): the minimal body is answered "execution error".
+        "__hs": "20782.HCSV2:barcelona_logged_out_pkg.2.1...0",
+        "dpr": "1",
+        "__ccg": "GOOD",
+        "__rev": "1056222758",
+        "__s": SEARCH_SESSION,
+        "__hsi": "7712110477617572567",
         "__comet_req": "122",
         "lsd": lsd,
+        "jazoest": "2" + str(sum(map(ord, lsd))),
+        "__spin_r": "1056222758",
+        "__spin_b": "trunk",
+        "__spin_t": "1795615646",
         "fb_api_caller_class": "RelayModern",
         "fb_api_req_friendly_name": SEARCH_QUERY_NAME,
         "variables": json.dumps(variables, separators=(",", ":")),
@@ -284,6 +296,9 @@ def build_search_request(lsd: str, word: str, session_id: str) -> tuple[str, dic
         "X-IG-App-ID": APP_ID,
         "X-ASBD-ID": "359341",
         "X-Logged-Out-Threads-Migrated-Request": "true",
+        "X-Root-Field-Name": "xdt_api__v1__text_feed__search_results__connection_v2",
+        "X-Bloks-Version-ID": "c879256a176052393d623a59d49c533cfe09564f34a3415ca7ad096d6067a378",
+        "X-Web-Session-ID": SEARCH_SESSION,
         "Sec-Fetch-Site": "same-origin",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
