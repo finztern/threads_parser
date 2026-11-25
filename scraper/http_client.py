@@ -555,6 +555,8 @@ class ThreadsHttpClient:
                 ok, posts, cursor, has_next = await self._parse(parse_fn, body, arg)
             if not ok:
                 self.stats["gql_bad_answer"] += 1
+                kind = "search" if parse_fn is parse_graphql_search else "tab" if tab else "replies"
+                self.error_kinds[f"gql {kind} bad answer: " + re.sub(r"\d+", "N", body[:110].decode("utf-8", "replace"))] += 1
                 continue  # not a replies answer (error JSON, rate limit): try another proxy
             self._pool.ok(proxy)
             self.stats[f"src_{src}_ok"] += 1
