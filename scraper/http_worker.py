@@ -247,9 +247,24 @@ async def http_runner(
 
     async with httpx.AsyncClient(transport=store_transport) as store_client:
         try:
+            loop_started = time.monotonic()
+            gate_logged = False
             while not stop_event.is_set():
                 cycle_start = time.monotonic()
                 cfg = config_store.get()
+                # After a start the VPN/free exits are not ready yet; with only dead Tor entries every request fails, which
+                # wastes a cycle and feeds zeros to the auto budget. Wait (at most 3 minutes) for the first exits.
+                if (
+                    isinstance(pool, MixedPool)
+                    and cfg.get("vpn_sources")
+                    and pool.static_counts()[1] == 0
+                    and cycle_start - loop_started < 180
+                ):
+                    if not gate_logged:
+                        LOGGER.info("waiting for the first VPN/free exits before the first cycle (up to 180 s)")
+                        gate_logged = True
+                    await _sleep(stop_event, 5)
+                    continue
                 disc = cfg.get("discovery", {}) or {}
                 max_per_cycle = budget.profiles if budget else int(disc.get("max_targets_per_cycle", 400))
                 if budget is not None and hot is not None:
@@ -635,7 +650,10 @@ async def http_runner(
                     timing["dispatch_run"] / max(timing["dispatches"], 1),
                     int(cfg.get("dispatch_concurrency", 64)),
                 )
-                if budget is not None:
+                cycle_failed = delta.get("requests", 0) >= 100 and delta.get("transport_errors", 0) > 0.5 * delta.get("requests", 0)
+                if cycle_failed:
+                    LOGGER.info("auto budget: cycle skipped (most requests failed on the transport level)")
+                if budget is not None and not cycle_failed:
                     message = budget.update(
                         totals["profile_pages"] + totals["tab_pages"],
                         totals["profile_new"] + totals["tab_new"],
