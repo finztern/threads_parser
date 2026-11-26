@@ -495,6 +495,7 @@ async def http_runner(
 
                 # Newest-first search: a stream of fresh posts without scraping profiles (search_on, default off).
                 if cfg.get("search_on", False):
+                    client.search_direct = bool(cfg.get("search_direct", False))
                     for w in search_words.take(int(cfg.get("search_per_cycle", 40))):
                         if w not in inflight_search:
                             spawn(search_job(w), inflight_search, w)

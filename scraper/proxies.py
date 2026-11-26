@@ -53,6 +53,27 @@ def _curl_buffersize() -> int:
         return 262144
 
 
+DIRECT = "direct://"
+
+
+class DirectPool:
+    """One pseudo exit "direct://" = the server's own address (used for queries that the proxy exits cannot do)."""
+
+    def next(self) -> str:
+        return DIRECT
+
+    next_retry = next
+
+    def ban(self, proxy: str, seconds: float = 0.0) -> None:
+        pass
+
+    def ok(self, proxy: str) -> None:
+        pass
+
+    def source(self, proxy: str) -> str:
+        return "direct"
+
+
 def transport_options(proxy: str) -> tuple[dict, dict]:
     """(AsyncSession kwargs, request kwargs) for a pool entry: a proxy URL, or "ipv6://<address>"
     = no proxy, bind to that source address and resolve IPv6 only.
@@ -63,6 +84,8 @@ def transport_options(proxy: str) -> tuple[dict, dict]:
         from curl_cffi.const import CurlOpt
 
         curl_options[CurlOpt.BUFFERSIZE] = size
+    if proxy == DIRECT:  # no proxy: the server's own address
+        return ({"curl_options": curl_options} if curl_options else {}), {}
     if proxy.startswith("ipv6://"):
         from curl_cffi.const import CurlOpt
 

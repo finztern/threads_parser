@@ -43,7 +43,7 @@ from scraper.threads_graphql import (
     parse_graphql_search,
     parse_graphql_tab,
 )
-from scraper.proxies import ProxyPool, mask_proxy, transport_options
+from scraper.proxies import DirectPool, ProxyPool, mask_proxy, transport_options
 
 HEADERS = {"Accept-Language": "en-US,en;q=0.9"}
 
@@ -137,6 +137,8 @@ class ThreadsHttpClient:
         self._user_ids: dict[str, str] = {}  # username (lower) -> numeric id, learned from parsed pages
         self._tab_gql = False  # Replies tab through GraphQL (set by the worker from config graphql_tabs)
         self._tab_first = 5
+        self._direct_pool = DirectPool()
+        self.search_direct = False  # search from the server's own address instead of the proxy exits
         self._gql_block: dict[str, float] = {}  # exit -> monotonic time until which GraphQL avoids it
         self._executor: ProcessPoolExecutor | None = None
         # PARSE_SHM=1 sends pages to the parse worker through shared memory instead of pickle. Measured: not faster
@@ -487,7 +489,7 @@ class ThreadsHttpClient:
             data, headers = build_search_request(lsd, word, session_id)
             return TAB_URL, data, headers  # same /graphql/query endpoint
 
-        label, posts, _cursor, _more = await self._gql_run(make, parse_graphql_search, word, tab=True)
+        label, posts, _cursor, _more = await self._gql_run(make, parse_graphql_search, word, tab=True, direct=self.search_direct)
         if label == "ok":
             self.stats["search_ok"] += 1
             self.stats["search_posts"] += len(posts)
@@ -502,19 +504,20 @@ class ThreadsHttpClient:
                     continue
                 self._user_ids[post.username.lower()] = pk
 
-    async def _gql_run(self, make, parse_fn, arg: str, tab: bool = False):
+    async def _gql_run(self, make, parse_fn, arg: str, tab: bool = False, direct: bool = False):
         """Shared transport of both GraphQL queries: (label, posts, cursor, has_next)."""
+        pool = self._direct_pool if direct else self._pool
         for attempt in range(self._attempts):
             await self._pace()
             async with self._req_sem:
-                pick = getattr(self._pool, "next_retry", self._pool.next) if attempt > 0 else self._pool.next
+                pick = getattr(pool, "next_retry", pool.next) if attempt > 0 else pool.next
                 proxy = pick()
                 for _ in range(6):  # skip exits the GraphQL endpoint rate-limited a moment ago
                     if self._gql_block.get(proxy, 0.0) <= time.monotonic():
                         break
-                    proxy = self._pool.next()
+                    proxy = pool.next()
                 self.stats["requests"] += 1
-                src = self._pool.source(proxy) if hasattr(self._pool, "source") else "pool"
+                src = pool.source(proxy) if hasattr(pool, "source") else "pool"
                 timeout = self._static_timeout if (src in ("static", "vpn") and self._static_timeout > 0) else self._timeout
                 self.stats[f"src_{src}_requests"] += 1
                 try:
@@ -529,7 +532,7 @@ class ThreadsHttpClient:
                         continue
                     if exc.status in (403, 429) or exc.status >= 500:
                         self.stats["blocked"] += 1
-                        self._pool.ban(proxy, 300.0 if exc.status == 429 else self._pool_cooldown())
+                        pool.ban(proxy, 300.0 if exc.status == 429 else pool_cooldown())
                     continue
                 except Exception as exc:  # noqa: BLE001 - transport problems, same handling as for pages
                     self.stats["transport_errors"] += 1
@@ -537,13 +540,13 @@ class ThreadsHttpClient:
                     if "timed out" in str(exc).lower() or "timeout" in str(exc).lower():
                         self.stats["timeouts"] += 1
                         self.stats[f"src_{src}_timeout"] += 1
-                        self._pool.ban(proxy, 60.0)
+                        pool.ban(proxy, 60.0)
                     else:
                         self.stats["conn_errors"] += 1
                         self.stats[f"src_{src}_error"] += 1
                         self._conn_window.append(True)
                         if not self._local_trouble():
-                            self._pool.ban(proxy, self._error_cooldown)
+                            pool.ban(proxy, self._error_cooldown)
                     continue
             self._conn_window.append(False)
             self.stats["bytes_gql"] += len(body)
@@ -558,7 +561,7 @@ class ThreadsHttpClient:
                 kind = "search" if parse_fn is parse_graphql_search else "tab" if tab else "replies"
                 self.error_kinds[f"gql {kind} bad answer: " + re.sub(r"\d+", "N", body[:110].decode("utf-8", "replace"))] += 1
                 continue  # not a replies answer (error JSON, rate limit): try another proxy
-            self._pool.ok(proxy)
+            pool.ok(proxy)
             self.stats[f"src_{src}_ok"] += 1
             self.stats["gql_comments"] += len(posts)
             return "ok", posts, cursor, has_next
