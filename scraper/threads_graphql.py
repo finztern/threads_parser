@@ -248,6 +248,15 @@ def parse_graphql_tab(text: str, username: str) -> tuple[bool, list[RawThreadsPo
 SEARCH_QUERY_NAME = "BarcelonaSearchResultsQuery"
 SEARCH_DOC_ID = "29794646893463541"
 SEARCH_SESSION = "7q6xvs:7omza1:xoscma"
+# Opaque bootstrap blobs of the same web-client build (public, copied from a HAR; the query is answered
+# "execution error" without them).
+SEARCH_BUILD_FIELDS: dict[str, str] = {
+    "__dyn": "7xe6E5q5U5ObwKBAg5S1Dxu13w8CewSwMwNw9G2S0lW4o0B-q1ew6ywaq0yE462mcw5Mx62G3i0Bo7O2l0Fwqo31w9O1lwlE-U2zxe2GewbS361qw8Xxm16wa-0raazo7u0zE2ZwrUdUbGw4mwr86C2q6oe84J6wWxibwzwHxW5Ec8yu4Q2-q1pxW1VwkUy1xwu81P82jwRwaSi3u5o",
+    "__csr": "gB7YQgBvL8iyfOrnqAztpLO9qaJWhHUBryyf-zhWnAWjzF4-A4Fp6jJdbKqbRht121uwRnm6A1Uw-G78_wyw07dhN03GjCAtwRl0ce581moK0jgM4d7hQ10hVFokt5e269wC81tAhtzk0Bo6aeG6BCt022za6A7e1kyZ0KwTzQ335G6A9KfOwNzEcogmp9y9ayEgxTyLm0sa0gR2yyAE188FeQGxG2pwLJ6X811psEB3EG2e083z982mw2dK0HOaAHaWwSguqz6q0ia5Eyew9e9g1Xvc7oun4mdx0SHCmbzUN3G50YyZwGx5Axe2nei0lubADBpUvDadwei5-4qwoFF9AuqRxZwT4a9x11-0wE6gE9h2xF1Qt60Yy-0ny1kwCDB5xSdDc3q26362V0Wwiykmbh8DsU3wDyECezGKbyqkd05Uw1Ut0yEF877DpmC4960IVo19oV2u8UeA3y79p99o2fg88vw6y80SU07t20UU0m0g6-7Qt7gS1Jc2x1SoPzo1Zz0hFo0vXw0xlw",
+    "__hsdp": "h4feg7xc0_WcEVzb2o90p5qHEJ4TRp2qWDUIgb80CO15A7xgE9c2o48NaEMMqoz6d3bxcEgwcN2kC7yk1Fz43y1uyEZ2A699Z0nUuXHc5oV7ofUf8gyoGEkxiaCx66o-8xl0Sz8jwKxzwGwfudwbi3V110lA4U10d2UG3-cg8oaE42EqwVwuE5e1TCF1m48iwkEco423i6E985mqp2r82qaxEOHS8iK9y5dhE4O78PwsA7oCrAwUw_x10r8Sqrxa4OwhE4u1dwIg88",
+    "__hblp": "014a33x63y488EeE11EKJ1-E4K7E8E8UbU5q3S0E9E2Yxi0g906cw9e3-3C1Zw_wEwZwiE6y3m2613yEqxmm2eUoyoc821xq0gu49oWu9UsCwzw4HwgE4i3m9w8q1-xS6o5y16wuA",
+    "__sjsp": "h4feg7xM3_aCEVzb2o2rUIg0Gy15A51AEa09gtiG",
+}
 
 
 def build_search_request(lsd: str, word: str, session_id: str) -> tuple[str, dict[str, str]]:
@@ -281,6 +290,7 @@ def build_search_request(lsd: str, word: str, session_id: str) -> tuple[str, dic
         "__spin_r": "1056222758",
         "__spin_b": "trunk",
         "__spin_t": "1795615646",
+        **SEARCH_BUILD_FIELDS,
         "fb_api_caller_class": "RelayModern",
         "fb_api_req_friendly_name": SEARCH_QUERY_NAME,
         "variables": json.dumps(variables, separators=(",", ":")),
