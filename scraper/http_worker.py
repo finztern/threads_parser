@@ -464,9 +464,12 @@ async def http_runner(
                         if discovery_on:
                             # Reply authors are the main source of new profiles (hot mode never saw them).
                             totals["discovered"] += registry.observe({r.username for r in replies})
+                        # Sharding: a reply is sent only by the instance that owns its AUTHOR; the other instance finds the same
+                        # reply on its own pages, and sending it from both only produced duplicates (~70% in the collector).
+                        mine = replies if owner is None else [r for r in replies if owner(r.username)]
                         try:
                             async with dispatch_sem:
-                                result = await dispatch_posts(replies, cfg, store_client, token_bucket, seen_cache)
+                                result = await dispatch_posts(mine, cfg, store_client, token_bucket, seen_cache)
                             totals.update(result)
                             new = result["to_send"] + result["rate_limited"]
                             registry.report_yield(username, new)
@@ -502,9 +505,10 @@ async def http_runner(
                         totals["hot_search_added"] += hot.observe(found)
                     if discovery_on:
                         totals["discovered"] += registry.observe({p.username for p in found})
+                    mine = found if owner is None else [p for p in found if owner(p.username)]  # one sender per author
                     try:
                         async with dispatch_sem:
-                            result = await dispatch_posts(found, cfg, store_client, token_bucket, seen_cache)
+                            result = await dispatch_posts(mine, cfg, store_client, token_bucket, seen_cache)
                         totals.update(result)
                         totals["search_new"] += result["to_send"] + result["rate_limited"]
                     except Exception:
