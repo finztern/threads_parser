@@ -176,7 +176,10 @@ async def http_runner(
             hot=int(cfg.get("hot_posts_per_cycle", 2000)),
             base_interval=float(cfg.get("hot_base_interval_seconds", 300)),
             # With the Replies tab, profile targets pay far more than hot post pages: start by moving budget to targets.
-            direction=-1 if cfg.get("replies_tab", True) else 1,
+            # With graphql_hot a hot page costs ~85 KB instead of ~1 MB, so the better direction is the opposite one, and a floor
+            # keeps the hill-climb from sliding to the minimum (it did, after a restart left the pipeline empty).
+            direction=1 if (cfg.get("graphql_hot", False) or not cfg.get("replies_tab", True)) else -1,
+            hot_bounds=(int(cfg.get("budget_hot_min", 1000)) if cfg.get("graphql_hot", False) else 100, 4000),
         )
         budget.load()
 
