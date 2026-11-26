@@ -11,7 +11,7 @@ import base64
 import json
 import re
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from scraper.pipeline import RawThreadsPost
 from scraper.threads_parse import THREADS_BASE_URL, _extract_reply_posts, _loads, _search_posts_from_data, _user_replies_from_data
@@ -248,6 +248,7 @@ def parse_graphql_tab(text: str, username: str) -> tuple[bool, list[RawThreadsPo
 SEARCH_QUERY_NAME = "BarcelonaSearchResultsQuery"
 SEARCH_DOC_ID = "29794646893463541"
 SEARCH_SESSION = "7q6xvs:7omza1:xoscma"
+SEARCH_SERP_SESSION = "d7b508dc-3b82-46a3-b63e-2aaf2d77d686"
 # Opaque bootstrap blobs of the same web-client build (public, copied from a HAR; the query is answered
 # "execution error" without them).
 SEARCH_BUILD_FIELDS: dict[str, str] = {
@@ -268,7 +269,7 @@ def build_search_request(lsd: str, word: str, session_id: str) -> tuple[str, dic
         "recent": 1,
         "requested_subtab": None,
         "search_surface": None,
-        "serp_session_id": session_id,
+        "serp_session_id": SEARCH_SERP_SESSION,  # the id of the HAR (the same value was accepted for every word)
         "tagID": None,
         "trend_fbid": None,
     }
@@ -300,15 +301,12 @@ def build_search_request(lsd: str, word: str, session_id: str) -> tuple[str, dic
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
         "Origin": THREADS_BASE_URL,
-        "Referer": f"{THREADS_BASE_URL}/search?q={word}&serp_type=default",
+        "Referer": f"{THREADS_BASE_URL}/search?q={quote(word)}&serp_type=default",  # header values must be ASCII
         "X-FB-LSD": lsd,
         "X-FB-Friendly-Name": SEARCH_QUERY_NAME,
         "X-IG-App-ID": APP_ID,
         "X-ASBD-ID": "359341",
         "X-Logged-Out-Threads-Migrated-Request": "true",
-        "X-Root-Field-Name": "xdt_api__v1__text_feed__search_results__connection_v2",
-        "X-Bloks-Version-ID": "c879256a176052393d623a59d49c533cfe09564f34a3415ca7ad096d6067a378",
-        "X-Web-Session-ID": SEARCH_SESSION,
         "Sec-Fetch-Site": "same-origin",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
