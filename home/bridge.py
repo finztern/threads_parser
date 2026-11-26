@@ -87,24 +87,28 @@ async def run_xray(config_path: Path, stop: asyncio.Event, state: dict) -> None:
 async def run_tunnel(target: str, cfg: dict, stop: asyncio.Event, state: dict) -> None:
     """Keep `ssh -N -R` to one VPS alive (target: user@host or user@host:port)."""
     user_host, _, port = target.partition(":")
-    args = [
-        "ssh", "-N", "-T", "-i", cfg["key"],
-        "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=accept-new",
-        "-o", f"UserKnownHostsFile={cfg['known_hosts']}",
-        "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
-        "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=30",
-        "-o", f"ProxyCommand=nc -X {cfg['proxy_proto']} -x {cfg['proxy_host']}:{cfg['socks_port']} %h %p",
-        "-R", f"{cfg['remote_bind']}:{cfg['local']}",
-        "-p", port or "22",
-        user_host,
-    ]
+
+    def build_args() -> list[str]:
+        # Built for every start: with a subscription the proxy port changes when a better node is chosen.
+        return [
+            "ssh", "-N", "-T", "-i", cfg["key"],
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", f"UserKnownHostsFile={cfg['known_hosts']}",
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+            "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=30",
+            "-o", f"ProxyCommand=nc -X {cfg['proxy_proto']} -x {cfg['proxy_host']}:{cfg['socks_port']} %h %p",
+            "-R", f"{cfg['remote_bind']}:{cfg['local']}",
+            "-p", port or "22",
+            user_host,
+        ]
+
     delay = 5.0
     while not stop.is_set():
-        if not _port_open(cfg["proxy_host"], cfg["socks_port"]):
+        if not cfg["socks_port"] or not _port_open(cfg["proxy_host"], cfg["socks_port"]):
             await asyncio.sleep(2.0)
             continue
-        proc = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.DEVNULL)
+        proc = await asyncio.create_subprocess_exec(*build_args(), stdin=asyncio.subprocess.DEVNULL)
         state[target] = (proc, time.monotonic())
         started = time.monotonic()
         code = await _wait_or_stop(proc, stop)
@@ -139,7 +143,11 @@ async def main() -> None:
     if not targets:
         raise SystemExit("BRIDGE_TARGETS is empty: set user@host[,user@host...] in home/.env")
     upstream = _env("BRIDGE_UPSTREAM_PROXY", "")
-    if upstream:
+    subscription = _env("BRIDGE_SUBSCRIPTION_URL", "")
+    if subscription:
+        # Own sing-box from a subscription: the port is chosen by the OS when the fastest node is started.
+        proxy_host, socks_port, proxy_proto = "127.0.0.1", 0, "5"
+    elif upstream:
         # A proxy that already runs on the home machine: no vless link and no xray in this container.
         proxy_host, socks_port, proxy_proto = parse_upstream(upstream)
     else:
@@ -156,7 +164,7 @@ async def main() -> None:
         "local": _env("BRIDGE_LOCAL", "127.0.0.1:9000"),
     }
     xray_config = Path("/tmp/xray.json")
-    if not upstream:
+    if not upstream and not subscription:
         nodes = load_nodes(Path(_env("BRIDGE_VLESS_FILE", "/data/vless.txt")))
         if not nodes:
             raise SystemExit("no usable vless:// link in the vless file (or set BRIDGE_UPSTREAM_PROXY to use a proxy that already runs)")
@@ -164,7 +172,8 @@ async def main() -> None:
         os.chmod(xray_config, 0o600)
     LOG.info(
         "bridge starting: %d VPS target(s), remote bind %s -> local %s, proxy %s",
-        len(targets), cfg["remote_bind"], cfg["local"], upstream or f"own xray on 127.0.0.1:{socks_port}",
+        len(targets), cfg["remote_bind"], cfg["local"],
+        "own sing-box from the subscription" if subscription else upstream or f"own xray on 127.0.0.1:{socks_port}",
     )
 
     stop = asyncio.Event()
@@ -173,10 +182,20 @@ async def main() -> None:
         loop.add_signal_handler(sig, stop.set)
 
     state: dict = {}
-    tasks = [] if upstream else [asyncio.create_task(run_xray(xray_config, stop, state))]
+    tasks = [] if (upstream or subscription) else [asyncio.create_task(run_xray(xray_config, stop, state))]
+    if subscription:
+        from proxy_manager import SubscriptionProxy  # needs sing-box, imported only in this mode
+
+        manager = SubscriptionProxy(
+            subscription, targets, Path(_env("BRIDGE_STATE_DIR", "/state")),
+            float(_env("BRIDGE_RESELECT_MINUTES", "30")), cfg, state,
+        )
+        tasks.append(asyncio.create_task(manager.run(stop)))
     tasks += [asyncio.create_task(run_tunnel(t, cfg, stop, state)) for t in targets]
 
     def proxy_label(current: dict) -> str:
+        if subscription:
+            return f"proxy {cfg.get('node_label') or 'choosing the node'}"
         if upstream:
             host_port = f"{cfg['proxy_host']}:{cfg['socks_port']}"
             return f"proxy {host_port}={'up' if _port_open(cfg['proxy_host'], cfg['socks_port']) else 'DOWN'}"

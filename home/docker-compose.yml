@@ -1,4 +1,6 @@
-# Home bridge: vless (inside the container only) + ssh reverse tunnels to the VPS parsers -> your local collector.
+# Home bridge: a proxy from your subscription (sing-box inside the container only, fastest node chosen automatically)
+# + ssh reverse tunnels to the VPS parsers -> your local collector. No ports are published; the proxy listens on a
+# loopback port chosen by the OS, so it cannot clash with anything on the host.
 # Run from this directory:  docker compose up -d --build   (see "Домашний мост" in the README)
 services:
   bridge:
@@ -12,31 +14,10 @@ services:
       - ./vless.txt:/data/vless.txt:ro
       - ./keys:/keys:ro
       - ./state:/state
-    cpus: 0.5
+    cpus: 1.0  # the node tests (a few minutes at start, then every BRIDGE_RESELECT_MINUTES) need some CPU
     logging:
       driver: json-file
       options:
         max-size: "10m"
-        max-file: "2"
-    restart: unless-stopped
-
-  # Optional: one more vless link as a plain local SOCKS5 proxy (127.0.0.1:10809), e.g. for the Exorde url-check of the Reddit test.
-  # The link lives in home/vless_urlcheck.txt (not in git). Start it with:  docker compose up -d --build urlcheck-socks
-  urlcheck-socks:
-    build:
-      context: ..
-      dockerfile: home/Dockerfile
-    command: ["python3", "socks_only.py"]
-    network_mode: host
-    environment:
-      SOCKS_PORT: "10809"
-      SOCKS_VLESS_FILE: /data/vless.txt
-    volumes:
-      - ./vless_urlcheck.txt:/data/vless.txt:ro
-    cpus: 0.3
-    logging:
-      driver: json-file
-      options:
-        max-size: "5m"
         max-file: "2"
     restart: unless-stopped
