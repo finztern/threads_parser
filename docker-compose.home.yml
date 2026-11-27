@@ -1,0 +1,23 @@
+# Home PC: the parser itself runs here, through YOUR subscription (vless + hysteria2, sing-box inside the container),
+# and posts to the collector on this machine (127.0.0.1:9000). No Tor, no published ports, no VPS.
+#   .env needs:  VPN_SOURCES_EXTRA=<subscription URL>   (a secret, only in the local .env)
+#   docker compose -f docker-compose.yml -f docker-compose.home.yml up -d --build parser
+# Lower request volume is set in config.home.yaml (merged over config.yaml via CONFIG_OVERLAY).
+services:
+  parser:
+    network_mode: host  # 127.0.0.1:9000 inside the container IS the home collector
+    extra_hosts: !reset []
+    environment:
+      STORE_ENDPOINT: ${STORE_ENDPOINT:-http://127.0.0.1:9000/store_items}
+      VPN_ONLY: "1"
+      TOR_INSTANCES: "0"
+      CONFIG_OVERLAY: /app/config.home.yaml
+    volumes:
+      - ./proxies.txt:/app/proxies.txt:ro
+      - ./vpn:/app/vpn:ro
+      - ./targets.txt:/app/targets.txt:ro
+      - ./config.yaml:/app/config.yaml
+      - ./config.home.yaml:/app/config.home.yaml:ro
+      - ./debug:/app/debug
+      - ./data:/app/data
+    cpus: ${PARSER_CPUS:-1.5}

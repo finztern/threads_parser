@@ -24,7 +24,7 @@ RUN apt-get update \
 
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
-COPY scraper/__init__.py scraper/constants.py scraper/vpn.py /app/scraper/
-COPY home/bridge.py home/singbox_sub.py home/proxy_manager.py /app/
+COPY scraper/__init__.py scraper/constants.py scraper/vpn.py scraper/singbox_sub.py /app/scraper/
+COPY home/bridge.py home/proxy_manager.py /app/
 
 CMD ["python3", "bridge.py"]

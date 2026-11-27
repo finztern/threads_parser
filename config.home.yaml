@@ -1,0 +1,18 @@
+# Home preset: merged over config.yaml (CONFIG_OVERLAY). Lower volume, only the own subscription as exits.
+http_concurrency: 40
+http_concurrency_min: 20
+http_concurrency_max: 80
+# Global cap on requests per second (home uplink / CPU); raise step by step while the exits hold.
+max_requests_per_second: 25
+static_proxy_share: 1.0
+# Free lists off: only the subscription from VPN_SOURCES_EXTRA (vpn_sources must stay empty for the sing-box path).
+proxy_sources: []
+vpn_sources: []
+vpn_refresh_minutes: 30
+vpn_candidates: 150
+vpn_keep: 60
+vpn_max_latency_seconds: 8.0
+vpn_probe_concurrency: 10
+hot_posts_per_cycle: 400
+budget_hot_min: 100
+search_on: false

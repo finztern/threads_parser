@@ -23,6 +23,7 @@ import httpx
 from curl_cffi import requests as cffi
 
 from scraper.constants import LOGGER
+from scraper.singbox_sub import build_test_config, free_ports, parse_subscription, valid_nodes
 from scraper.vpn import build_xray_config, parse_vless
 
 THREADS_URL = "https://www.threads.com/@zuck/replies"
@@ -97,10 +98,101 @@ def extra_sources() -> list[str]:
     return [u for u in re.split(r"[\s,]+", os.getenv("VPN_SOURCES_EXTRA", "")) if u.startswith("http")]
 
 
+SINGBOX_LOG = os.path.join(tempfile.gettempdir(), "singbox_vpn.log")
+
+
+async def _wait_listening(ports: list[int], proc: asyncio.subprocess.Process, seconds: float = 15.0) -> bool:
+    """True once the last inbound accepts connections (sing-box opens them all at start)."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and proc.returncode is None:
+        try:
+            _, writer = await asyncio.open_connection("127.0.0.1", ports[-1])
+            writer.close()
+            return True
+        except OSError:
+            await asyncio.sleep(0.3)
+    return False
+
+
+async def _download_text(urls: list[str]) -> str:
+    bodies: list[str] = []
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        for url in urls:
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                bodies.append(response.text)
+            except Exception as exc:  # noqa: BLE001 - the URL carries a token: never log it
+                LOGGER.warning("vpn subscription download failed: %s", type(exc).__name__)
+    return "\n".join(bodies)
+
+
+async def harvest_singbox(cfg: dict) -> tuple[list[str], asyncio.subprocess.Process | None]:
+    """Own subscription (vless + hysteria2) through ONE sing-box with a loopback SOCKS inbound per node on OS-chosen
+    ports. Every node is probed with a real Threads page; the fastest `vpn_keep` are returned."""
+    singbox = os.getenv("SINGBOX_BIN") or shutil.which("sing-box")
+    if not singbox:
+        return [], None
+    text = await _download_text(extra_sources())
+    nodes = parse_subscription(text)
+    if not nodes:
+        LOGGER.warning("vpn subscription: no usable vless/hysteria2 nodes")
+        return [], None
+    random.shuffle(nodes)
+    nodes = await valid_nodes(nodes[: int(cfg.get("vpn_candidates", 800))])
+    if not nodes:
+        LOGGER.warning("vpn subscription: sing-box accepted no node")
+        return [], None
+    ports = free_ports(len(nodes))
+    fd, name = tempfile.mkstemp(prefix="sb_vpn_", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(build_test_config(nodes, ports), handle)
+    log_file = open(SINGBOX_LOG, "wb")  # noqa: SIM115 - handed to the child process
+    proc = await asyncio.create_subprocess_exec(singbox, "run", "-c", name, stdout=log_file, stderr=log_file)
+    log_file.close()
+    try:
+        if not await _wait_listening(ports, proc):
+            LOGGER.warning("vpn: sing-box did not start (exit %s). log: %s", proc.returncode, _tail(SINGBOX_LOG))
+            _stop(proc)
+            return [], None
+    finally:
+        try:
+            os.unlink(name)  # sing-box has read it (the file holds node credentials)
+        except OSError:
+            pass
+    sem = asyncio.Semaphore(int(cfg.get("vpn_probe_concurrency", 30)))
+    max_latency = float(cfg.get("vpn_max_latency_seconds", 6.0))
+    latencies = await asyncio.gather(*(_probe(port, max_latency * 2.5, max_latency, sem) for port in ports))
+    good = sorted((lat, port) for lat, port in zip(latencies, ports) if lat is not None)[: int(cfg.get("vpn_keep", 150))]
+    if not good:
+        LOGGER.warning("vpn: %d nodes started, none opened a Threads page", len(nodes))
+        _stop(proc)
+        return [], None
+    kinds = {"vless": 0, "hysteria2": 0}
+    by_port = dict(zip(ports, nodes))
+    for _, port in good:
+        kinds[by_port[port].kind] += 1
+    LOGGER.info(
+        "vpn harvest (sing-box): %d nodes tested, %d open Threads (<=%.0fs), median %.1fs, kept %d vless + %d hysteria2",
+        len(nodes), sum(1 for lat in latencies if lat is not None), max_latency, statistics.median(l for l, _ in good),
+        kinds["vless"], kinds["hysteria2"],
+    )
+    return [f"{LOCAL_PREFIX}{port}" for _, port in good], proc
+
+
+def _tail(path: str, lines: int = 6) -> str:
+    try:
+        return " | ".join(Path(path).read_text(errors="ignore").splitlines()[-lines:])[:600]
+    except OSError:
+        return ""
+
+
 async def harvest_nodes(cfg: dict, base_port: int) -> tuple[list[str], asyncio.subprocess.Process | None]:
     """(working local proxies, the Xray process that serves them). Empty list when nothing worked."""
     sources = [s for s in (cfg.get("vpn_sources") or []) if isinstance(s, str) and s.strip()]
     extra = extra_sources()
+    if extra and not sources and (os.getenv("SINGBOX_BIN") or shutil.which("sing-box")):
+        return await harvest_singbox(cfg)  # own subscription only: sing-box (vless + hysteria2)
     xray = os.getenv("XRAY_BIN") or shutil.which("xray")
     if not (sources or extra) or not xray:
         return [], None
@@ -170,8 +262,5 @@ stop_xray = _stop
 
 
 def xray_tail(lines: int = 6) -> str:
-    """Last lines of the Xray log (why did it die?)."""
-    try:
-        return " | ".join(Path(XRAY_LOG).read_text(errors="ignore").splitlines()[-lines:])[:600]
-    except OSError:
-        return ""
+    """Last lines of the Xray / sing-box log (why did it die?)."""
+    return _tail(XRAY_LOG, lines) or _tail(SINGBOX_LOG, lines)

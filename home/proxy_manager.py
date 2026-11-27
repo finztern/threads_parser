@@ -22,7 +22,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from singbox_sub import Node, build_run_config, build_test_config, free_ports, parse_subscription
+from scraper.singbox_sub import Node, build_run_config, build_test_config, free_ports, parse_subscription, valid_nodes
 
 LOG = logging.getLogger("proxy")
 
@@ -105,29 +105,6 @@ async def _stop(proc: asyncio.subprocess.Process | None, path: Path | None = Non
     if path is not None:
         with contextlib.suppress(OSError):
             path.unlink()
-
-
-async def _check(nodes: list[Node]) -> bool:
-    """`sing-box check` of a config with these nodes."""
-    path = Path("/tmp/sb_check.json")
-    path.write_text(json.dumps(build_test_config(nodes, free_ports(len(nodes)))), encoding="utf-8")
-    os.chmod(path, 0o600)
-    proc = await asyncio.create_subprocess_exec(
-        "sing-box", "check", "-c", str(path), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-    )
-    return await proc.wait() == 0
-
-
-async def valid_nodes(nodes: list[Node]) -> list[Node]:
-    """Keep the nodes sing-box accepts: a failing group is halved until the bad nodes are alone."""
-    if not nodes:
-        return []
-    if await _check(nodes):
-        return nodes
-    if len(nodes) == 1:
-        return []
-    middle = len(nodes) // 2
-    return await valid_nodes(nodes[:middle]) + await valid_nodes(nodes[middle:])
 
 
 async def _wait_ports(ports: list[int], proc: asyncio.subprocess.Process, seconds: float = 10.0) -> bool:

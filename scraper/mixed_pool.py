@@ -14,7 +14,7 @@ from scraper.tor_pool import TorPool
 class MixedPool:
     rotating = True  # same as Tor: a blocked answer says nothing about the next request
 
-    def __init__(self, tor: TorPool, static: ProxyPool | None, static_share: float = 0.4, cooldown: float = 120.0) -> None:
+    def __init__(self, tor: TorPool | None, static: ProxyPool | None, static_share: float = 0.4, cooldown: float = 120.0) -> None:
         self._tor = tor
         self._static = static
         self._cooldown = cooldown
@@ -23,7 +23,7 @@ class MixedPool:
         self._share = min(1.0, max(0.0, static_share))
 
     def __len__(self) -> int:
-        return len(self._tor) + (len(self._static) if self._static else 0)
+        return (len(self._tor) if self._tor else 0) + (len(self._static) if self._static else 0)
 
     def update_static(self, proxies: list[str], part: str = "proxies") -> None:
         """Replace one part of the static list ("proxies" = harvested free proxies, "vpn" = local Xray nodes);
@@ -44,12 +44,22 @@ class MixedPool:
         self._share = min(1.0, max(0.0, share))
 
     def next(self) -> str:
+        if self._tor is None:
+            return self._static_only()
         if self._static and self._share > 0 and random.random() < self._share and self._static.available() > 0:
             return self._static.next()
         return self._tor.next()
 
+    def _static_only(self) -> str:
+        """No Tor (home mode): every request goes through the static/VPN list; before the first harvest it is empty."""
+        if not self._static:
+            raise RuntimeError("no proxies yet (the VPN list is still being built)")
+        return self._static.next()
+
     def next_retry(self) -> str:
         """A retry after a failed attempt: static proxies are much cleaner than Tor exits, so prefer them."""
+        if self._tor is None:
+            return self._static_only()
         if self._static and self._static.available() > 0 and random.random() < max(self._share, 0.8):
             return self._static.next()
         return self._tor.next()
@@ -60,7 +70,7 @@ class MixedPool:
         return "tor"
 
     def _owner(self, proxy: str):
-        return self._static if proxy in self._static_set else self._tor
+        return self._static if proxy in self._static_set or self._tor is None else self._tor
 
     def ban(self, proxy: str, seconds: float | None = None) -> None:
         if proxy in self._static_set:
@@ -77,7 +87,9 @@ class MixedPool:
 
     def health(self) -> float:
         """Share of healthy Tor instances. Banned free proxies are normal churn and must not look like a sick pool."""
+        if self._tor is None:
+            return self._static.available() / max(len(self._static), 1) if self._static else 0.0
         return self._tor.available() / max(len(self._tor), 1)
 
     def available(self) -> int:
-        return self._tor.available() + (self._static.available() if self._static else 0)
+        return (self._tor.available() if self._tor else 0) + (self._static.available() if self._static else 0)

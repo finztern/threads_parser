@@ -46,6 +46,12 @@ class ConfigStore:
     def load(self) -> None:
         with open(self._path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
+        # Optional overlay (env CONFIG_OVERLAY = path of a yaml file): its keys replace the ones of config.yaml, so a
+        # machine-specific preset (home PC) does not need a full copy of the config.
+        overlay = self._overlay_path()
+        if overlay is not None:
+            with open(overlay, "r", encoding="utf-8") as f:
+                raw.update(yaml.safe_load(f) or {})
         raw.setdefault("store_endpoint", DEFAULT_STORE_ENDPOINT)
         raw.setdefault("domain", DOMAIN)
         # Env override for store_endpoint, useful in docker-compose.
@@ -56,12 +62,22 @@ class ConfigStore:
             raw["url_check_endpoint"] = os.environ["URL_CHECK_ENDPOINT"]
         with self._lock:
             self._data = raw
-            self._mtime = self._path.stat().st_mtime
+            self._mtime = self._stamp()
         LOGGER.info(
             "config.yaml loaded: target_rate=%s poll_interval=%s",
             raw.get("target_rate_per_second"),
             raw.get("poll_interval_seconds"),
         )
+
+    @staticmethod
+    def _overlay_path() -> Path | None:
+        name = os.getenv("CONFIG_OVERLAY", "").strip()
+        path = Path(name) if name else None
+        return path if path is not None and path.is_file() else None
+
+    def _stamp(self) -> float:
+        overlay = self._overlay_path()
+        return self._path.stat().st_mtime + (overlay.stat().st_mtime if overlay else 0.0)
 
     def get(self) -> dict[str, Any]:
         with self._lock:
@@ -81,7 +97,7 @@ class ConfigStore:
             interval = self.get().get("reload_interval_seconds", 5)
             time.sleep(interval)
             try:
-                mtime = self._path.stat().st_mtime
+                mtime = self._stamp()
                 if mtime != self._mtime:
                     self.load()
             except OSError as exc:

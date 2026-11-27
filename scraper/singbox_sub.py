@@ -8,11 +8,15 @@ Nothing from a link (user id, password, keys) is logged; `Node.name` is the publ
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
+import json
+import os
 import re
 import socket
+import tempfile
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -250,3 +254,32 @@ def build_test_config(nodes: list[Node], ports: list[int]) -> dict:
 def build_run_config(node: Node, port: int) -> dict:
     """The working proxy: one loopback SOCKS inbound through the chosen node."""
     return build_test_config([node], [port])
+
+
+async def _check(nodes: list[Node]) -> bool:
+    """`sing-box check` of a config with these nodes."""
+    fd, name = tempfile.mkstemp(prefix="sb_check_", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(build_test_config(nodes, free_ports(len(nodes))), handle)
+        proc = await asyncio.create_subprocess_exec(
+            "sing-box", "check", "-c", name, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+        )
+        return await proc.wait() == 0
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+
+
+async def valid_nodes(nodes: list[Node]) -> list[Node]:
+    """Keep the nodes sing-box accepts: a failing group is halved until the bad nodes are alone."""
+    if not nodes:
+        return []
+    if await _check(nodes):
+        return nodes
+    if len(nodes) == 1:
+        return []
+    middle = len(nodes) // 2
+    return await valid_nodes(nodes[:middle]) + await valid_nodes(nodes[middle:])

@@ -85,6 +85,10 @@ async def http_runner(
             # IPv6 mode: no proxies, a random address of your own /64 per request (see ipv6_pool.py).
             pool = Ipv6Pool(ipv6_prefixes)
             tor_instances = 0
+        elif os.getenv("VPN_ONLY", "").strip() == "1" and os.getenv("VPN_SOURCES_EXTRA", "").strip():
+            # Home mode: no Tor, every request goes through the exits of the own subscription (see vpn_harvest.py).
+            pool = MixedPool(None, None, 1.0, cooldown=float(cfg.get("proxy_cooldown_seconds", 120)))
+            LOGGER.info("http mode: own VPN subscription only (no Tor), exits appear after the first harvest")
         elif tor_instances > 0:
             # Tor mode: proxies.txt is not used; every request gets its own circuit (see tor_pool.py).
             pool = TorPool(os.getenv("TOR_HOST", "tor"), int(os.getenv("TOR_BASE_PORT", "9050")), tor_instances,
@@ -115,8 +119,9 @@ async def http_runner(
     if isinstance(pool, Ipv6Pool):
         http_timeout = cfg.get("http_timeout_seconds", 15)
         http_attempts = cfg.get("http_attempts", 3)
-    elif tor_instances > 0:
-        LOGGER.info("http mode: Tor, %d instances (new circuit per request)", len(pool))
+    elif tor_instances > 0 or (isinstance(pool, MixedPool) and pool._tor is None):  # noqa: SLF001
+        if tor_instances > 0:
+            LOGGER.info("http mode: Tor, %d instances (new circuit per request)", len(pool))
         # Tor is slower than a proxy and many exits are blocked: longer timeout, more retries.
         http_timeout = max(float(cfg.get("http_timeout_seconds", 15)), float(cfg.get("tor_http_timeout_seconds", 30)))
         http_attempts = max(int(cfg.get("http_attempts", 3)), int(cfg.get("tor_http_attempts", 5)))
@@ -256,12 +261,12 @@ async def http_runner(
                 # wastes a cycle and feeds zeros to the auto budget. Wait (at most 3 minutes) for the first exits.
                 if (
                     isinstance(pool, MixedPool)
-                    and cfg.get("vpn_sources")
+                    and (cfg.get("vpn_sources") or os.getenv("VPN_SOURCES_EXTRA", "").strip())
                     and pool.static_counts()[1] == 0
-                    and cycle_start - loop_started < 180
+                    and cycle_start - loop_started < (900 if pool._tor is None else 180)  # noqa: SLF001
                 ):
                     if not gate_logged:
-                        LOGGER.info("waiting for the first VPN/free exits before the first cycle (up to 180 s)")
+                        LOGGER.info("waiting for the first VPN/free exits before the first cycle (a few minutes)")
                         gate_logged = True
                     await _sleep(stop_event, 5)
                     continue
